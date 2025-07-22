@@ -6,4 +6,4 @@ experiments/*
 
 .venv/*
 
-.data/*
+data/*
