@@ -2,16 +2,6 @@
 *pyc
 .vscode/
 
-experiments/*/*/checkpoints*/*
-experiments/*/*/log*/*
-experiments/*/*/arun_log*/*
-experiments/*/*/*result*/*
-experiments/*/*/*vis*/*
-
-experiments/*/checkpoints*/*
-experiments/*/log*/*
-experiments/*/arun_log*/*
-experiments/*/*result*/*
-experiments/*/*vis*/*
+experiments/*
 
 .venv/*
