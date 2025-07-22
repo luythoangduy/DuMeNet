@@ -6,4 +6,4 @@ experiments/*
 
 .venv/*
 
-data/*
+data/MVTec-AD/mvtec_anomaly_detection/*
