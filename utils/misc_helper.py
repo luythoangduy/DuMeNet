@@ -103,7 +103,7 @@ def load_state(path, model, optimizer=None):
         if rank == 0:
             print("=> loading checkpoint '{}'".format(path))
 
-        checkpoint = torch.load(path, map_location=map_func)
+        checkpoint = torch.load(path, map_location=map_func, weights_only=False)
 
         # fix size mismatch error
         ignore_keys = []
