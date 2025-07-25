@@ -132,10 +132,15 @@ def main():
         resume_model = lastest_model
     if resume_model:
         best_metric, last_epoch = load_state(resume_model, model, optimizer=optimizer)
+        if rank == 0:
+            logger.info(
+                f"Resumed decoder training from epoch {last_epoch} with best metric {best_metric}"
+            )
+            logger.info(f"Resume model path: {resume_model}")
     elif load_path:
-        if not load_path.startswith("/"):
-            load_path = os.path.join(config.exp_path, load_path)
         load_state(load_path, model)
+        if rank == 0:
+            logger.info(f"Loaded decoder model from: {load_path}")
 
     train_loader, _ = build_dataloader(config.dataset, distributed=True)
 
@@ -146,6 +151,12 @@ def main():
     criterion = build_criterion(config.criterion)
 
     for epoch in range(last_epoch, config.trainer.max_epoch):
+        # Log epoch info at start
+        if rank == 0 and epoch == last_epoch:
+            logger.info(
+                f"Starting decoder training from epoch {epoch + 1}/{config.trainer.max_epoch}"
+            )
+
         train_loader.sampler.set_epoch(epoch)
         last_iter = epoch * len(train_loader)
         train_loss = train_one_epoch(

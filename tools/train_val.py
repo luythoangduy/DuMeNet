@@ -27,9 +27,17 @@ from utils.misc_helper import (
     save_checkpoint,
     set_random_seed,
     update_config,
+    init_wandb,
 )
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
+
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    wandb = None
 
 parser = argparse.ArgumentParser(description="UniAD Framework")
 parser.add_argument("--config", default="./config.yaml")
@@ -75,9 +83,13 @@ def main():
         )
         logger.info("args: {}".format(pprint.pformat(args)))
         logger.info("config: {}".format(pprint.pformat(config)))
+        
+        # Initialize wandb if configured
+        wandb_run = init_wandb(config, args)
     else:
         tb_logger = None
         logger = None
+        wandb_run = None
 
     random_seed = config.get("random_seed", None)
     reproduce = config.get("reproduce", None)
@@ -138,10 +150,29 @@ def main():
         resume_model = lastest_model
     if resume_model:
         best_metric, last_epoch = load_state(resume_model, model, optimizer=optimizer)
+        if rank == 0 and logger:
+            logger.info(f"Resumed training from epoch {last_epoch} with best metric {best_metric}")
+            logger.info(f"Resume model path: {resume_model}")
+            
+            # Log resume information to wandb
+            if wandb_run:
+                wandb_run.log({
+                    "resume/start_epoch": last_epoch,
+                    "resume/best_metric": best_metric,
+                    "resume/model_path": resume_model
+                }, step=0)
     elif load_path:
         if not load_path.startswith("/"):
             load_path = os.path.join(config.exp_path, load_path)
         load_state(load_path, model)
+        if rank == 0 and logger:
+            logger.info(f"Loaded model from: {load_path}")
+            
+            # Log load information to wandb
+            if wandb_run:
+                wandb_run.log({
+                    "load/model_path": load_path
+                }, step=0)
 
     # Build dataloader - use distributed=False for single GPU
     train_loader, val_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode)
@@ -153,6 +184,16 @@ def main():
     criterion = build_criterion(config.criterion)
 
     for epoch in range(last_epoch, config.trainer.max_epoch):
+        # Log current epoch info at start of training
+        if rank == 0 and epoch == last_epoch and logger:
+            logger.info(f"Starting training from epoch {epoch + 1}/{config.trainer.max_epoch}")
+            if wandb_run:
+                wandb_run.log({
+                    "training/start_epoch": epoch + 1,
+                    "training/total_epochs": config.trainer.max_epoch,
+                    "training/remaining_epochs": config.trainer.max_epoch - epoch
+                }, step=epoch * len(train_loader))
+        
         if not single_gpu_mode:
             train_loader.sampler.set_epoch(epoch)
             val_loader.sampler.set_epoch(epoch)
@@ -169,11 +210,12 @@ def main():
             frozen_layers,
             single_gpu_mode,
             use_ddp,
+            wandb_run,
         )
         lr_scheduler.step(epoch)
 
         if (epoch + 1) % config.trainer.val_freq_epoch == 0:
-            ret_metrics = validate(val_loader, model, single_gpu_mode)
+            ret_metrics = validate(val_loader, model, single_gpu_mode, wandb_run, epoch)
             # only ret_metrics on rank0 is not empty
             if rank == 0:
                 ret_key_metric = ret_metrics[key_metric]
@@ -190,6 +232,22 @@ def main():
                     is_best,
                     config,
                 )
+                
+                # Log best metric to wandb
+                if wandb_run:
+                    wandb_run.log({
+                        f"best_{key_metric}": best_metric,
+                        "epoch": epoch + 1,
+                    })
+
+    if rank == 0 and wandb_run:
+        # Log final training summary
+        wandb_run.log({
+            "training/completed": True,
+            "training/final_epoch": config.trainer.max_epoch,
+            "training/final_best_metric": best_metric
+        })
+        wandb_run.finish()
 
 
 def train_one_epoch(
@@ -204,6 +262,7 @@ def train_one_epoch(
     frozen_layers,
     single_gpu_mode,
     use_ddp,
+    wandb_run=None,
 ):
 
     batch_time = AverageMeter(config.trainer.print_freq_step)
@@ -267,6 +326,15 @@ def train_one_epoch(
                 tb_logger.add_scalar("loss_train", losses.avg, curr_step + 1)
                 tb_logger.add_scalar("lr", current_lr, curr_step + 1)
                 tb_logger.flush()
+            
+            # Log to wandb
+            if wandb_run:
+                wandb_run.log({
+                    "train/loss": losses.avg,
+                    "train/lr": current_lr,
+                    "train/epoch": epoch + (i + 1) / len(train_loader),
+                    "step": curr_step + 1,
+                })
 
             if logger:
                 logger.info(
@@ -290,7 +358,7 @@ def train_one_epoch(
         end = time.time()
 
 
-def validate(val_loader, model, single_gpu_mode):
+def validate(val_loader, model, single_gpu_mode, wandb_run=None, epoch=None):
     batch_time = AverageMeter(0)
     losses = AverageMeter(0)
 
@@ -359,6 +427,14 @@ def validate(val_loader, model, single_gpu_mode):
         # evaluate, log & vis
         ret_metrics = performances(fileinfos, preds, masks, config.evaluator.metrics)
         log_metrics(ret_metrics, config.evaluator.metrics)
+        
+        # Log validation metrics to wandb
+        if wandb_run and epoch is not None:
+            wandb_metrics = {"val/loss": final_loss, "epoch": epoch + 1}
+            for metric_name, metric_value in ret_metrics.items():
+                wandb_metrics[f"val/{metric_name}"] = metric_value
+            wandb_run.log(wandb_metrics)
+        
         if args.evaluate and config.evaluator.get("vis_compound", None):
             visualize_compound(
                 fileinfos,

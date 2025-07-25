@@ -223,3 +223,73 @@ def update_config(config):
     config.net[1].kwargs.outplanes = [sum(outplanes)]
 
     return config
+
+
+def init_wandb(config, args=None):
+    """Initialize wandb with configuration from config file"""
+    try:
+        import wandb
+    except ImportError:
+        print("Warning: wandb not available. Install with 'pip install wandb'")
+        return None
+    
+    wandb_config = config.get("wandb", None)
+    if not wandb_config or not wandb_config.get("enabled", False):
+        return None
+    
+    # Setup wandb configuration
+    wandb_init_kwargs = {
+        "project": wandb_config.get("project", "uniad"),
+        "name": wandb_config.get("name", None),
+        "tags": wandb_config.get("tags", []),
+        "notes": wandb_config.get("notes", ""),
+        "config": dict(config),  # Log the entire config
+    }
+    
+    # Handle entity (team/username)
+    if wandb_config.get("entity"):
+        wandb_init_kwargs["entity"] = wandb_config["entity"]
+    
+    # Handle run group and job type
+    if wandb_config.get("group"):
+        wandb_init_kwargs["group"] = wandb_config["group"]
+    if wandb_config.get("job_type"):
+        wandb_init_kwargs["job_type"] = wandb_config["job_type"]
+    
+    # Handle resume functionality
+    if wandb_config.get("resume"):
+        wandb_init_kwargs["resume"] = wandb_config["resume"]
+        if wandb_config.get("run_id"):
+            wandb_init_kwargs["id"] = wandb_config["run_id"]
+    
+    # Set wandb mode (online, offline, disabled)
+    mode = wandb_config.get("mode", "online")
+    wandb_init_kwargs["mode"] = mode
+    
+    # Handle wandb directory
+    if wandb_config.get("dir"):
+        wandb_init_kwargs["dir"] = wandb_config["dir"]
+    
+    # Login if API key provided
+    if wandb_config.get("api_key"):
+        wandb.login(key=wandb_config["api_key"])
+    elif wandb_config.get("login", True):  # Default to True for backwards compatibility
+        try:
+            wandb.login()
+        except Exception as e:
+            print(f"Warning: wandb login failed: {e}")
+            return None
+    
+    try:
+        run = wandb.init(**wandb_init_kwargs)
+        
+        # Log additional metadata
+        if args:
+            run.config.update({"args": vars(args)})
+        
+        print(f"Initialized wandb run: {run.name} ({run.id})")
+        return run
+    
+    except Exception as e:
+        print(f"Warning: Failed to initialize wandb: {e}")
+        return None
