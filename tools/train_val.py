@@ -30,7 +30,7 @@ from utils.misc_helper import (
     init_wandb,
 )
 from utils.optimizer_helper import get_optimizer
-from utils.vis_helper import visualize_compound, visualize_single
+from utils.vis_helper import visualize_compound, visualize_single, visualize_reconstruction
 
 try:
     import wandb
@@ -422,7 +422,7 @@ def validate(val_loader, model, single_gpu_mode, wandb_run=None, epoch=None):
             logger.info("Gathering final results ...")
             # total loss
             logger.info(" * Loss {:.5f}\ttotal_num={}".format(final_loss, total_num))
-        fileinfos, preds, masks = merge_together(config.evaluator.eval_dir)
+        fileinfos, preds, masks, recons = merge_together(config.evaluator.eval_dir)
         shutil.rmtree(config.evaluator.eval_dir)
         # evaluate, log & vis
         ret_metrics = performances(fileinfos, preds, masks, config.evaluator.metrics)
@@ -448,6 +448,16 @@ def validate(val_loader, model, single_gpu_mode, wandb_run=None, epoch=None):
                 fileinfos,
                 preds,
                 config.evaluator.vis_single,
+                config.dataset.image_reader,
+            )
+        if args.evaluate and config.evaluator.get("vis_reconstruction", None):
+            # Use reconstruction data from merged results
+            visualize_reconstruction(
+                fileinfos,
+                preds,
+                masks,
+                recons,  # Now available from merge_together
+                config.evaluator.vis_reconstruction,
                 config.dataset.image_reader,
             )
     model.train()

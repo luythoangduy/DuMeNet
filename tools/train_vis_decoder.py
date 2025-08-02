@@ -14,6 +14,7 @@ from easydict import EasyDict
 from models.model_helper import ModelHelper
 from tensorboardX import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn import DataParallel
 from utils.criterion_helper import build_criterion
 from utils.dist_helper import setup_distributed
 from utils.lr_helper import get_scheduler
@@ -33,6 +34,7 @@ parser.add_argument("--config", default="./config.yaml")
 parser.add_argument("--class_name", default="")
 parser.add_argument("-v", "--visualization", action="store_true")
 parser.add_argument("--local_rank", default=None, help="local rank for dist")
+parser.add_argument("--single_gpu", action="store_true", help="Use single GPU mode")
 
 
 class_name_list = [
@@ -61,14 +63,34 @@ def main():
     with open(args.config) as f:
         config = EasyDict(yaml.load(f, Loader=yaml.FullLoader))
 
-    config.dataset.train.meta_file = config.dataset.train.meta_file.replace(
-        "{class_name}", args.class_name
-    )
-    config.port = config["port"] + class_name_list.index(args.class_name)
-    rank, world_size = setup_distributed(port=config.port)
+    # Determine if running in single GPU mode
+    single_gpu_mode = args.single_gpu or not torch.distributed.is_available() or not os.environ.get('WORLD_SIZE')
+    
+    if single_gpu_mode:
+        rank = 0
+        world_size = 1
+        print("Running in single GPU mode")
+        # Handle class_name replacement for single GPU mode
+        if args.class_name:
+            config.dataset.train.meta_file = config.dataset.train.meta_file.replace(
+                "{class_name}", args.class_name
+            )
+    else:
+        config.dataset.train.meta_file = config.dataset.train.meta_file.replace(
+            "{class_name}", args.class_name
+        )
+        config.port = config["port"] + class_name_list.index(args.class_name)
+        rank, world_size = setup_distributed(port=config.port)
     config = update_config(config)
 
-    config.exp_path = os.path.join(os.path.dirname(args.config), args.class_name)
+    if single_gpu_mode:
+        # For single GPU mode, use the config directory directly or with class_name
+        if args.class_name:
+            config.exp_path = os.path.join(os.path.dirname(args.config), args.class_name)
+        else:
+            config.exp_path = os.path.dirname(args.config)
+    else:
+        config.exp_path = os.path.join(os.path.dirname(args.config), args.class_name)
     config.save_path = os.path.join(config.exp_path, config.saver.save_dir)
     config.log_path = os.path.join(config.exp_path, config.saver.log_dir)
     if rank == 0:
@@ -92,13 +114,21 @@ def main():
     # create model
     model = ModelHelper(config.net)
     model.cuda()
-    local_rank = int(os.environ["LOCAL_RANK"])
-    model = DDP(
-        model,
-        device_ids=[local_rank],
-        output_device=local_rank,
-        find_unused_parameters=True,
-    )
+    
+    # Use DDP only for multi-GPU, DataParallel for single GPU with multiple devices
+    if single_gpu_mode:
+        if torch.cuda.device_count() > 1:
+            model = DataParallel(model)
+        use_ddp = False
+    else:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
+        )
+        use_ddp = True
 
     layers = []
     for module in config.net:
@@ -110,8 +140,10 @@ def main():
         logger.info("active layers: {}".format(active_layers))
 
     # parameters needed to be updated
+    # Handle both DDP and DataParallel/single GPU cases
+    model_for_params = model.module if (use_ddp or isinstance(model, DataParallel)) else model
     parameters = [
-        {"params": getattr(model.module, layer).parameters()} for layer in active_layers
+        {"params": getattr(model_for_params, layer).parameters()} for layer in active_layers
     ]
 
     optimizer = get_optimizer(parameters, config.trainer.optimizer)
@@ -142,7 +174,8 @@ def main():
         if rank == 0:
             logger.info(f"Loaded decoder model from: {load_path}")
 
-    train_loader, _ = build_dataloader(config.dataset, distributed=True)
+    # Build dataloader - use distributed=False for single GPU
+    train_loader, _ = build_dataloader(config.dataset, distributed=not single_gpu_mode)
 
     if args.visualization:
         vis_rec(train_loader, model)
@@ -157,7 +190,8 @@ def main():
                 f"Starting decoder training from epoch {epoch + 1}/{config.trainer.max_epoch}"
             )
 
-        train_loader.sampler.set_epoch(epoch)
+        if not single_gpu_mode:
+            train_loader.sampler.set_epoch(epoch)
         last_iter = epoch * len(train_loader)
         train_loss = train_one_epoch(
             train_loader,
@@ -169,6 +203,8 @@ def main():
             tb_logger,
             criterion,
             frozen_layers,
+            single_gpu_mode,
+            use_ddp,
         )
         lr_scheduler.step(epoch)
 
@@ -202,6 +238,8 @@ def train_one_epoch(
     tb_logger,
     criterion,
     frozen_layers,
+    single_gpu_mode,
+    use_ddp,
 ):
 
     batch_time = AverageMeter(config.trainer.print_freq_step)
@@ -211,14 +249,19 @@ def train_one_epoch(
     # switch to train mode
     model.train()
     # freeze selected layers
+    model_for_freeze = model.module if (use_ddp or isinstance(model, DataParallel)) else model
     for layer in frozen_layers:
-        module = getattr(model.module, layer)
+        module = getattr(model_for_freeze, layer)
         module.eval()
         for param in module.parameters():
             param.requires_grad = False
 
-    world_size = dist.get_world_size()
-    rank = dist.get_rank()
+    if single_gpu_mode:
+        world_size = 1
+        rank = 0
+    else:
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
     logger = logging.getLogger("global_logger")
     end = time.time()
 
@@ -236,9 +279,13 @@ def train_one_epoch(
         for name, criterion_loss in criterion.items():
             weight = criterion_loss.weight
             loss += weight * criterion_loss(outputs)
-        reduced_loss = loss.clone()
-        dist.all_reduce(reduced_loss)
-        reduced_loss = reduced_loss / world_size
+        
+        if single_gpu_mode:
+            reduced_loss = loss.clone()
+        else:
+            reduced_loss = loss.clone()
+            dist.all_reduce(reduced_loss)
+            reduced_loss = reduced_loss / world_size
         losses.update(reduced_loss.item())
         train_loss += reduced_loss.item()
 
