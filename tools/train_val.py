@@ -32,6 +32,25 @@ from utils.misc_helper import (
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
 
+
+class_name_list = [
+    "bottle",
+    "cable",
+    "capsule",
+    "carpet",
+    "grid",
+    "hazelnut",
+    "leather",
+    "metal_nut",
+    "pill",
+    "screw",
+    "tile",
+    "toothbrush",
+    "transistor",
+    "wood",
+    "zipper",
+]
+
 try:
     import wandb
     WANDB_AVAILABLE = True
@@ -41,6 +60,7 @@ except ImportError:
 
 parser = argparse.ArgumentParser(description="UniAD Framework")
 parser.add_argument("--config", default="./config.yaml")
+parser.add_argument("--class_name", default="", help="Class name for separate training")
 parser.add_argument("-e", "--evaluate", action="store_true")
 parser.add_argument("--local_rank", default=None, help="local rank for dist")
 parser.add_argument("--single_gpu", action="store_true", help="Use single GPU mode")
@@ -53,6 +73,9 @@ def main():
     with open(args.config) as f:
         config = EasyDict(yaml.load(f, Loader=yaml.FullLoader))
 
+    # Store class_name for dataset filtering
+    dataset_class_name = args.class_name if args.class_name else None
+
     # Determine if running in single GPU mode
     single_gpu_mode = args.single_gpu or not torch.distributed.is_available() or not os.environ.get('WORLD_SIZE')
     
@@ -60,14 +83,34 @@ def main():
         rank = 0
         world_size = 1
         print("Running in single GPU mode")
+        # Handle class_name replacement for single GPU mode
+        if args.class_name:
+            print(f"Training separate class: {args.class_name}")
     else:
-        config.port = config.get("port", None)
+        if args.class_name:
+            # Adjust port for different classes to avoid conflicts
+            if args.class_name in class_name_list:
+                config.port = config.get("port", 11111) + class_name_list.index(args.class_name)
+            print(f"Training separate class: {args.class_name}")
+        else:
+            config.port = config.get("port", None)
         rank, world_size = setup_distributed(port=config.port)
     
     print("config: {}".format(pprint.pformat(config)))
     config = update_config(config)
 
-    config.exp_path = os.path.dirname(args.config)
+    # Set experiment path - create class-specific directory if class_name provided
+    if single_gpu_mode:
+        if args.class_name:
+            config.exp_path = os.path.join(os.path.dirname(args.config), args.class_name)
+        else:
+            config.exp_path = os.path.dirname(args.config)
+    else:
+        if args.class_name:
+            config.exp_path = os.path.join(os.path.dirname(args.config), args.class_name)
+        else:
+            config.exp_path = os.path.dirname(args.config)
+    
     config.save_path = os.path.join(config.exp_path, config.saver.save_dir)
     config.log_path = os.path.join(config.exp_path, config.saver.log_dir)
     config.evaluator.eval_dir = os.path.join(config.exp_path, config.evaluator.save_dir)
@@ -86,6 +129,13 @@ def main():
         
         # Initialize wandb if configured
         wandb_run = init_wandb(config, args)
+        
+        # Log class-specific training info
+        if args.class_name:
+            logger.info(f"Training separate class: {args.class_name}")
+            logger.info(f"Experiment path: {config.exp_path}")
+            if wandb_run:
+                wandb_run.log({"class_name": args.class_name}, step=0)
     else:
         tb_logger = None
         logger = None
@@ -175,7 +225,7 @@ def main():
                 }, step=0)
 
     # Build dataloader - use distributed=False for single GPU
-    train_loader, val_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode)
+    train_loader, val_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode, class_name=dataset_class_name)
 
     if args.evaluate:
         validate(val_loader, model, single_gpu_mode)

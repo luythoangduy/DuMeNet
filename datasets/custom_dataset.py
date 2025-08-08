@@ -17,7 +17,7 @@ from datasets.transforms import RandomColorJitter
 logger = logging.getLogger("global_logger")
 
 
-def build_custom_dataloader(cfg, training, distributed=True):
+def build_custom_dataloader(cfg, training, distributed=True, class_name=None):
 
     image_reader = build_image_reader(cfg.image_reader)
 
@@ -42,6 +42,7 @@ def build_custom_dataloader(cfg, training, distributed=True):
         transform_fn=transform_fn,
         normalize_fn=normalize_fn,
         colorjitter_fn=colorjitter_fn,
+        class_name=class_name,
     )
 
     if distributed:
@@ -69,6 +70,7 @@ class CustomDataset(BaseDataset):
         transform_fn,
         normalize_fn,
         colorjitter_fn=None,
+        class_name=None,
     ):
         self.image_reader = image_reader
         self.meta_file = meta_file
@@ -76,13 +78,23 @@ class CustomDataset(BaseDataset):
         self.transform_fn = transform_fn
         self.normalize_fn = normalize_fn
         self.colorjitter_fn = colorjitter_fn
+        self.class_name = class_name
 
         # construct metas
         with open(meta_file, "r") as f_r:
             self.metas = []
             for line in f_r:
                 meta = json.loads(line)
+                # Filter by class_name if specified
+                if class_name is not None:
+                    # Get class name from filename or clsname field
+                    item_class = meta.get("clsname", meta["filename"].split("/")[-4])
+                    if item_class != class_name:
+                        continue
                 self.metas.append(meta)
+        
+        logger.info(f"Dataset loaded: {len(self.metas)} samples" + 
+                   (f" (filtered by class: {class_name})" if class_name else ""))
 
     def __len__(self):
         return len(self.metas)
