@@ -227,24 +227,34 @@ class UniADMemory(nn.Module):
         # Input projection
         self.input_proj = nn.Linear(inplanes[0], hidden_dim)
         
-        # Memory modules 
+        # Memory modules configuration
+        self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
         self.channel_memory_size = kwargs.get('channel_memory_size', 256)
         self.spatial_memory_size = kwargs.get('spatial_memory_size', 256)
         
-        # Channel memory module - xử lý feature patterns
-        self.channel_memory_module = ChannelMemoryModule(
-            mem_dim=self.channel_memory_size,
-            feature_dim=hidden_dim,
-            **kwargs
-        )
+        # Initialize memory modules based on mode
+        self.use_channel_memory = self.memory_mode in ['channel', 'both']
+        self.use_spatial_memory = self.memory_mode in ['spatial', 'both']
         
-        # Spatial memory module - xử lý spatial patterns  
-        self.spatial_memory_module = SpatialMemoryModule(
-            mem_dim=self.spatial_memory_size,
-            height=feature_size[0],
-            width=feature_size[1],
-            **kwargs
-        )
+        self.channel_memory_module = None
+        self.spatial_memory_module = None
+        
+        if self.use_channel_memory:
+            # Channel memory module - xử lý feature patterns
+            self.channel_memory_module = ChannelMemoryModule(
+                mem_dim=self.channel_memory_size,
+                feature_dim=hidden_dim,
+                **kwargs
+            )
+        
+        if self.use_spatial_memory:
+            # Spatial memory module - xử lý spatial patterns  
+            self.spatial_memory_module = SpatialMemoryModule(
+                mem_dim=self.spatial_memory_size,
+                height=feature_size[0],
+                width=feature_size[1],
+                **kwargs
+            )
         
         # Transformer encoder
         encoder_layer = TransformerEncoderLayer(
@@ -279,8 +289,14 @@ class UniADMemory(nn.Module):
             return_intermediate=False,
         )
         
-        # Feature fusion layer
-        self.fusion_layer = nn.Linear(hidden_dim * 2, hidden_dim)
+        # Feature fusion layer - adapt based on memory mode
+        fusion_input_dim = hidden_dim
+        if self.use_channel_memory and self.use_spatial_memory:
+            fusion_input_dim = hidden_dim * 2
+        elif self.use_channel_memory or self.use_spatial_memory:
+            fusion_input_dim = hidden_dim
+        
+        self.fusion_layer = nn.Linear(fusion_input_dim, hidden_dim) if fusion_input_dim > hidden_dim else nn.Identity()
         
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
@@ -325,18 +341,33 @@ class UniADMemory(nn.Module):
             feature_tokens, pos=pos_embed
         )  # (H x W) x B x C
         
-        # Memory retrieval using new memory modules
-        channel_result = self.channel_memory_module(encoded_tokens)
-        channel_retrieved = channel_result['output']  # (H x W) x B x C
-        #print(f"Channel memory retrieved shape: {channel_retrieved.shape}")
-        spatial_result = self.spatial_memory_module(encoded_tokens)
-        spatial_retrieved = spatial_result['output']  # C x B x H x W
-        #print(f"Spatial memory retrieved shape: {spatial_retrieved.shape}")
-        spatial_retrieved = torch.permute(spatial_retrieved, (2, 1, 0))  # (H x W) x B x C
-        # Fuse channel and spatial memory features
-
-        combined_features = torch.cat([channel_retrieved, spatial_retrieved], dim=-1)  # (H x W) x B x (2*C)
-        memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
+        # Memory retrieval based on memory mode
+        memory_features_list = []
+        channel_result = None
+        spatial_result = None
+        
+        if self.use_channel_memory:
+            channel_result = self.channel_memory_module(encoded_tokens)
+            channel_retrieved = channel_result['output']  # (H x W) x B x C
+            memory_features_list.append(channel_retrieved)
+        
+        if self.use_spatial_memory:
+            spatial_result = self.spatial_memory_module(encoded_tokens)
+            spatial_retrieved = spatial_result['output']  # C x B x H x W
+            spatial_retrieved = torch.permute(spatial_retrieved, (2, 1, 0))  # (H x W) x B x C
+            memory_features_list.append(spatial_retrieved)
+        
+        # Fuse memory features based on available memories
+        if len(memory_features_list) == 0:
+            # No memory - use encoded tokens directly
+            memory_features = encoded_tokens
+        elif len(memory_features_list) == 1:
+            # Single memory type
+            memory_features = self.fusion_layer(memory_features_list[0])
+        else:
+            # Multiple memory types - concatenate and fuse
+            combined_features = torch.cat(memory_features_list, dim=-1)  # (H x W) x B x (N*C)
+            memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
         
         # Decode features
         decoded_tokens = self.decoder(
@@ -372,15 +403,27 @@ class UniADMemory(nn.Module):
         )  # B x 1 x H x W
         pred = self.upsample(pred)  # B x 1 x H x W
         
-        return {
+        # Prepare output dictionary based on available memories
+        output_dict = {
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
-            "channel_attention": channel_result['att_weight'],
-            "spatial_attention": spatial_result['att_weight'],
-            "channel_scores": channel_result['attention_scores'],
-            "spatial_ssim": spatial_result['ssim_similarity'],
         }
+        
+        # Add memory-specific outputs if available
+        if channel_result is not None:
+            output_dict.update({
+                "channel_attention": channel_result['att_weight'],
+                "channel_scores": channel_result['attention_scores'],
+            })
+        
+        if spatial_result is not None:
+            output_dict.update({
+                "spatial_attention": spatial_result['att_weight'],
+                "spatial_ssim": spatial_result['ssim_similarity'],
+            })
+        
+        return output_dict
 
 
 class TransformerEncoder(nn.Module):
