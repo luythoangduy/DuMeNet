@@ -229,6 +229,7 @@ class UniADMemory(nn.Module):
         
         # Memory modules configuration
         self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
+        self.fusion_mode = kwargs.get('fusion_mode', 'concat')  # 'concat', 'add', 'multiply', 'attention', 'gate'
         self.channel_memory_size = kwargs.get('channel_memory_size', 256)
         self.spatial_memory_size = kwargs.get('spatial_memory_size', 256)
         
@@ -289,14 +290,22 @@ class UniADMemory(nn.Module):
             return_intermediate=False,
         )
         
-        # Feature fusion layer - adapt based on memory mode
-        fusion_input_dim = hidden_dim
+        # Feature fusion layer - adapt based on memory mode and fusion strategy
         if self.use_channel_memory and self.use_spatial_memory:
-            fusion_input_dim = hidden_dim * 2
-        elif self.use_channel_memory or self.use_spatial_memory:
-            fusion_input_dim = hidden_dim
-        
-        self.fusion_layer = nn.Linear(fusion_input_dim, hidden_dim) if fusion_input_dim > hidden_dim else nn.Identity()
+            if self.fusion_mode == 'concat':
+                self.fusion_layer = nn.Linear(hidden_dim * 2, hidden_dim)
+            elif self.fusion_mode == 'add':
+                self.fusion_layer = nn.Identity()
+            elif self.fusion_mode == 'multiply':
+                self.fusion_layer = nn.Identity()
+            elif self.fusion_mode == 'attention':
+                self.fusion_layer = TokenFusionAttention(hidden_dim)
+            elif self.fusion_mode == 'gate':
+                self.fusion_layer = TokenFusionGate(hidden_dim)
+            else:
+                raise ValueError(f"Unsupported fusion_mode: {self.fusion_mode}")
+        else:
+            self.fusion_layer = nn.Identity()
         
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
@@ -357,17 +366,29 @@ class UniADMemory(nn.Module):
             spatial_retrieved = torch.permute(spatial_retrieved, (2, 1, 0))  # (H x W) x B x C
             memory_features_list.append(spatial_retrieved)
         
-        # Fuse memory features based on available memories
+        # Fuse memory features based on available memories and fusion mode
         if len(memory_features_list) == 0:
             # No memory - use encoded tokens directly
             memory_features = encoded_tokens
         elif len(memory_features_list) == 1:
             # Single memory type
-            memory_features = self.fusion_layer(memory_features_list[0])
+            memory_features = memory_features_list[0]
         else:
-            # Multiple memory types - concatenate and fuse
-            combined_features = torch.cat(memory_features_list, dim=-1)  # (H x W) x B x (N*C)
-            memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
+            # Multiple memory types - fuse based on fusion_mode
+            if self.fusion_mode == 'concat':
+                combined_features = torch.cat(memory_features_list, dim=-1)  # (H x W) x B x (N*C)
+                memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
+            elif self.fusion_mode == 'add':
+                memory_features = sum(memory_features_list)  # Element-wise addition
+            elif self.fusion_mode == 'multiply':
+                memory_features = memory_features_list[0]
+                for feat in memory_features_list[1:]:
+                    memory_features = memory_features * feat  # Element-wise multiplication
+            elif self.fusion_mode in ['attention', 'gate']:
+                # For attention and gate, pass both features to the fusion layer
+                memory_features = self.fusion_layer(memory_features_list[0], memory_features_list[1])
+            else:
+                raise ValueError(f"Unsupported fusion_mode: {self.fusion_mode}")
         
         # Decode features
         decoded_tokens = self.decoder(
@@ -828,3 +849,62 @@ def build_position_embedding(pos_embed_type, feature_size, hidden_dim):
     else:
         raise ValueError(f"not supported {pos_embed_type}")
     return pos_embed
+
+
+class TokenFusionAttention(nn.Module):
+    """
+    Attention-based fusion of two token sequences
+    """
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.attention = nn.MultiheadAttention(hidden_dim, num_heads=8, batch_first=False)
+        self.norm = nn.LayerNorm(hidden_dim)
+        
+    def forward(self, channel_tokens, spatial_tokens):
+        """
+        Args:
+            channel_tokens: (H x W) x B x C
+            spatial_tokens: (H x W) x B x C
+        Returns:
+            fused_tokens: (H x W) x B x C
+        """
+        # Use channel tokens as query, spatial tokens as key/value
+        attn_output, _ = self.attention(
+            query=channel_tokens,
+            key=spatial_tokens, 
+            value=spatial_tokens
+        )
+        
+        # Residual connection and normalization
+        fused_tokens = self.norm(channel_tokens + attn_output)
+        return fused_tokens
+
+
+class TokenFusionGate(nn.Module):
+    """
+    Gated fusion of two token sequences using learned gates
+    """
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.gate_proj = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.sigmoid = nn.Sigmoid()
+        self.norm = nn.LayerNorm(hidden_dim)
+        
+    def forward(self, channel_tokens, spatial_tokens):
+        """
+        Args:
+            channel_tokens: (H x W) x B x C
+            spatial_tokens: (H x W) x B x C
+        Returns:
+            fused_tokens: (H x W) x B x C
+        """
+        # Concatenate both tokens to compute gate
+        combined = torch.cat([channel_tokens, spatial_tokens], dim=-1)  # (H x W) x B x (2*C)
+        gate = self.sigmoid(self.gate_proj(combined))  # (H x W) x B x C
+        
+        # Apply gate: gate * channel + (1-gate) * spatial
+        fused_tokens = gate * channel_tokens + (1 - gate) * spatial_tokens
+        fused_tokens = self.norm(fused_tokens)
+        return fused_tokens
