@@ -270,7 +270,6 @@ class UniADMemory(nn.Module):
         pos_embed_type,
         save_recon,
         initializer,
-        upsample_config=None,  # interpolate method
         **kwargs,
     ):
         super().__init__()
@@ -347,8 +346,7 @@ class UniADMemory(nn.Module):
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
         
         # Upsampling
-        # self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
-        self.upsample = self._build_upsampler(instrides[0], upsample_config)
+        self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
 
         # Initialize parameters
         initialize_from_cfg(self, initializer)
@@ -363,43 +361,6 @@ class UniADMemory(nn.Module):
             jitter = jitter * feature_norms * scale
             feature_tokens = feature_tokens + jitter
         return feature_tokens
-    
-    def _build_upsampler(self, stride, upsample_config):
-        """Build upsampler based on config"""
-        if upsample_config is None:
-            # Default: bilinear upsampling (giữ nguyên như cũ)
-            print('interpolate: bilinear')
-            return nn.UpsamplingBilinear2d(scale_factor=stride)
-        
-        method = upsample_config.get('method', 'bilinear')
-        
-        if method == 'nearest':
-            print('interpolate: nearest')
-            return nn.UpsamplingNearest2d(scale_factor=stride)
-        
-        elif method == 'multistep':
-            mode = upsample_config.get('mode', 'nearest')
-            print('interpolate: multistep')
-            return MultiStepUpsampler(scale_factor=stride, mode=mode)
-        
-        elif method == 'threshold':
-            threshold_ratio = upsample_config.get('threshold_ratio', 0.5)
-            base_mode = upsample_config.get('mode', 'bilinear')
-            print('interpolate: threshold')
-            return ThresholdUpsampler(
-                scale_factor=stride, 
-                threshold_ratio=threshold_ratio,
-                mode=base_mode
-            )
-        
-        elif method == 'bilinear':
-            print('interpolate: bilinear')
-            return nn.UpsamplingBilinear2d(scale_factor=stride)
-        
-        else:
-            # Fallback to bilinear nếu method không hợp lệ
-            print('interpolate: bilinear')
-            return nn.UpsamplingBilinear2d(scale_factor=stride)
 
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W

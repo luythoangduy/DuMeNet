@@ -197,66 +197,6 @@ class SpatialMemoryModule(nn.Module):
             'memory': self.memory
         }
 
-class MultiStepUpsampler(nn.Module):
-    """Multi-step upsampling để giảm artifacts"""
-    def __init__(self, scale_factor, mode='nearest'):
-        super().__init__()
-        self.total_scale = scale_factor
-        self.mode = mode
-        
-        # Tính số steps cần thiết (log2 của scale_factor)
-        if scale_factor > 1:
-            self.num_steps = int(np.log2(scale_factor))
-            if 2 ** self.num_steps != scale_factor:
-                # Nếu scale_factor không phải power of 2, dùng single step
-                self.num_steps = 1
-                self.step_scale = scale_factor
-            else:
-                self.step_scale = 2
-        else:
-            self.num_steps = 1
-            self.step_scale = scale_factor
-    
-    def forward(self, x):
-        if self.num_steps == 1:
-            if self.mode == 'nearest':
-                return F.interpolate(x, scale_factor=self.step_scale, mode='nearest')
-            else:
-                return F.interpolate(x, scale_factor=self.step_scale, mode='bilinear', align_corners=False)
-        
-        # Multi-step upsampling
-        for _ in range(self.num_steps):
-            if self.mode == 'nearest':
-                x = F.interpolate(x, scale_factor=self.step_scale, mode='nearest')
-            else:
-                x = F.interpolate(x, scale_factor=self.step_scale, mode='bilinear', align_corners=False)
-        return x
-
-
-class ThresholdUpsampler(nn.Module):
-    """Upsampling with thresholding để giảm bleeding"""
-    def __init__(self, scale_factor, threshold_ratio=0.5, mode='bilinear'):
-        super().__init__()
-        self.scale_factor = scale_factor
-        self.threshold_ratio = threshold_ratio
-        self.mode = mode
-    
-    def forward(self, x):
-        # Standard upsampling
-        if self.mode == 'nearest':
-            upsampled = F.interpolate(x, scale_factor=self.scale_factor, mode='nearest')
-        else:
-            upsampled = F.interpolate(x, scale_factor=self.scale_factor, mode='bilinear', align_corners=False)
-        
-        # Apply threshold để loại bỏ vùng bleeding
-        threshold = x.max() * self.threshold_ratio
-        upsampled = torch.where(
-            upsampled > threshold,
-            upsampled,
-            torch.zeros_like(upsampled)
-        )
-        
-        return upsampled
 
 class UniADMemory(nn.Module):
     def __init__(
@@ -270,7 +210,6 @@ class UniADMemory(nn.Module):
         pos_embed_type,
         save_recon,
         initializer,
-        upsample_config=None,  # interpolate method
         **kwargs,
     ):
         super().__init__()
@@ -347,8 +286,7 @@ class UniADMemory(nn.Module):
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
         
         # Upsampling
-        # self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
-        self.upsample = self._build_upsampler(instrides[0], upsample_config)
+        self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
 
         # Initialize parameters
         initialize_from_cfg(self, initializer)
@@ -363,43 +301,6 @@ class UniADMemory(nn.Module):
             jitter = jitter * feature_norms * scale
             feature_tokens = feature_tokens + jitter
         return feature_tokens
-    
-    def _build_upsampler(self, stride, upsample_config):
-        """Build upsampler based on config"""
-        if upsample_config is None:
-            # Default: bilinear upsampling (giữ nguyên như cũ)
-            print('interpolate: bilinear')
-            return nn.UpsamplingBilinear2d(scale_factor=stride)
-        
-        method = upsample_config.get('method', 'bilinear')
-        
-        if method == 'nearest':
-            print('interpolate: nearest')
-            return nn.UpsamplingNearest2d(scale_factor=stride)
-        
-        elif method == 'multistep':
-            mode = upsample_config.get('mode', 'nearest')
-            print('interpolate: multistep')
-            return MultiStepUpsampler(scale_factor=stride, mode=mode)
-        
-        elif method == 'threshold':
-            threshold_ratio = upsample_config.get('threshold_ratio', 0.5)
-            base_mode = upsample_config.get('mode', 'bilinear')
-            print('interpolate: threshold')
-            return ThresholdUpsampler(
-                scale_factor=stride, 
-                threshold_ratio=threshold_ratio,
-                mode=base_mode
-            )
-        
-        elif method == 'bilinear':
-            print('interpolate: bilinear')
-            return nn.UpsamplingBilinear2d(scale_factor=stride)
-        
-        else:
-            # Fallback to bilinear nếu method không hợp lệ
-            print('interpolate: bilinear')
-            return nn.UpsamplingBilinear2d(scale_factor=stride)
 
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
