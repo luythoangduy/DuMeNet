@@ -30,7 +30,7 @@ from utils.misc_helper import (
     init_wandb,
 )
 from utils.optimizer_helper import get_optimizer
-from utils.vis_helper import visualize_compound, visualize_single
+from utils.vis_helper import visualize_compound, visualize_single, visualize_reconstruction
 
 try:
     import wandb
