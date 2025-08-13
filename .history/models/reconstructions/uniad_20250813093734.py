@@ -13,70 +13,6 @@ from torch import Tensor, nn
 
 __all__ = ["UniADMemory"]
 
-class ContrastiveLoss(nn.Module):
-    """
-    Contrastive loss for memory modules
-    """
-    def __init__(self, temperature=0.07, margin=1.0):
-        super(ContrastiveLoss, self).__init__()
-        self.temperature = temperature
-        self.margin = margin
-        
-    def forward(self, channel_features, spatial_features, labels=None):
-        """
-        Args:
-            channel_features: [N, D] - features from channel memory
-            spatial_features: [N, D] - features from spatial memory  
-            labels: [N] - 0 for normal, 1 for anomaly (optional)
-        """
-        batch_size = channel_features.size(0)
-        
-        # Normalize features
-        channel_features = F.normalize(channel_features, dim=1)
-        spatial_features = F.normalize(spatial_features, dim=1)
-        
-        # Compute similarity matrices
-        channel_sim = torch.mm(channel_features, channel_features.t()) / self.temperature
-        spatial_sim = torch.mm(spatial_features, spatial_features.t()) / self.temperature
-        cross_sim = torch.mm(channel_features, spatial_features.t()) / self.temperature
-        
-        # Create positive and negative masks
-        if labels is not None:
-            # Use labels to create positive pairs (same label)
-            labels = labels.unsqueeze(1)
-            pos_mask = (labels == labels.t()).float()
-            neg_mask = (labels != labels.t()).float()
-        else:
-            # Treat same sample as positive, different samples as negative
-            pos_mask = torch.eye(batch_size).cuda()
-            neg_mask = 1 - pos_mask
-        
-        # Remove diagonal (self-similarity)
-        pos_mask = pos_mask - torch.eye(batch_size).cuda()
-        
-        # Contrastive loss for channel features
-        channel_pos = torch.sum(torch.exp(channel_sim) * pos_mask, dim=1)
-        channel_neg = torch.sum(torch.exp(channel_sim) * neg_mask, dim=1)
-        channel_loss = -torch.log(channel_pos / (channel_pos + channel_neg + 1e-8))
-        
-        # Contrastive loss for spatial features
-        spatial_pos = torch.sum(torch.exp(spatial_sim) * pos_mask, dim=1)
-        spatial_neg = torch.sum(torch.exp(spatial_sim) * neg_mask, dim=1)
-        spatial_loss = -torch.log(spatial_pos / (spatial_pos + spatial_neg + 1e-8))
-        
-        # Cross-modal contrastive loss (channel vs spatial)
-        cross_pos = torch.sum(torch.exp(cross_sim) * pos_mask, dim=1)
-        cross_neg = torch.sum(torch.exp(cross_sim) * neg_mask, dim=1)
-        cross_loss = -torch.log(cross_pos / (cross_pos + cross_neg + 1e-8))
-        
-        total_loss = (channel_loss.mean() + spatial_loss.mean() + cross_loss.mean()) / 3
-        
-        return {
-            'contrastive_loss': total_loss,
-            'channel_contrastive': channel_loss.mean(),
-            'spatial_contrastive': spatial_loss.mean(),
-            'cross_modal_contrastive': cross_loss.mean()
-        }
 
 class ChannelMemoryModule(nn.Module):
     """
@@ -355,18 +291,6 @@ class UniADMemory(nn.Module):
         # Initialize parameters
         initialize_from_cfg(self, initializer)
 
-        self.use_contrastive = kwargs.get('use_contrastive', False)
-        if self.use_contrastive:
-            self.contrastive_loss = ContrastiveLoss(
-                temperature=kwargs.get('contrastive_temperature', 0.07),
-                margin=kwargs.get('contrastive_margin', 1.0)
-            )
-            
-            # Feature projection for contrastive learning
-            self.channel_proj = nn.Linear(hidden_dim, kwargs.get('contrastive_dim', 128))
-            self.spatial_proj = nn.Linear(hidden_dim, kwargs.get('contrastive_dim', 128))
-
-
     def add_jitter(self, feature_tokens, scale, prob):
         if random.uniform(0, 1) <= prob:
             num_tokens, batch_size, dim_channel = feature_tokens.shape
@@ -409,28 +333,8 @@ class UniADMemory(nn.Module):
         spatial_retrieved = spatial_result['output']  # C x B x H x W
         #print(f"Spatial memory retrieved shape: {spatial_retrieved.shape}")
         spatial_retrieved = torch.permute(spatial_retrieved, (2, 1, 0))  # (H x W) x B x C
-        
-        # Contrastive learning
-        contrastive_losses = {}
-        if self.use_contrastive and self.training:
-            # Pool features for contrastive learning
-            channel_pooled = torch.mean(channel_retrieved, dim=0)  # B x C
-            spatial_pooled = torch.mean(spatial_retrieved, dim=0)  # B x C
-            
-            # Project to contrastive space
-            channel_proj_feat = self.channel_proj(channel_pooled)  # B x contrastive_dim
-            spatial_proj_feat = self.spatial_proj(spatial_pooled)  # B x contrastive_dim
-            
-            # Get labels if available
-            labels = input.get('label', None)
-            
-            # Compute contrastive loss
-            contrastive_result = self.contrastive_loss(
-                channel_proj_feat, spatial_proj_feat, labels
-            )
-            contrastive_losses.update(contrastive_result)
-        
         # Fuse channel and spatial memory features
+
         combined_features = torch.cat([channel_retrieved, spatial_retrieved], dim=-1)  # (H x W) x B x (2*C)
         memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
         
@@ -468,7 +372,7 @@ class UniADMemory(nn.Module):
         )  # B x 1 x H x W
         pred = self.upsample(pred)  # B x 1 x H x W
         
-        result = {
+        return {
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
@@ -477,11 +381,6 @@ class UniADMemory(nn.Module):
             "channel_scores": channel_result['attention_scores'],
             "spatial_ssim": spatial_result['ssim_similarity'],
         }
-        # Add contrastive losses to output
-        if contrastive_losses:
-            result.update(contrastive_losses)
-            
-        return result
 
 
 class TransformerEncoder(nn.Module):

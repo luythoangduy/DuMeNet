@@ -325,38 +325,16 @@ def train_one_epoch(
             if tb_logger:
                 tb_logger.add_scalar("loss_train", losses.avg, curr_step + 1)
                 tb_logger.add_scalar("lr", current_lr, curr_step + 1)
-                 # Log contrastive losses if available
-                if 'contrastive_loss' in outputs:
-                    tb_logger.add_scalar("contrastive_loss", outputs['contrastive_loss'].item(), curr_step + 1)
-                if 'channel_contrastive' in outputs:
-                    tb_logger.add_scalar("channel_contrastive", outputs['channel_contrastive'].item(), curr_step + 1)
-                if 'spatial_contrastive' in outputs:
-                    tb_logger.add_scalar("spatial_contrastive", outputs['spatial_contrastive'].item(), curr_step + 1)
-                if 'cross_modal_contrastive' in outputs:
-                    tb_logger.add_scalar("cross_modal_contrastive", outputs['cross_modal_contrastive'].item(), curr_step + 1)
-          
                 tb_logger.flush()
             
             # Log to wandb
             if wandb_run:
-                wandb_metrics = {
+                wandb_run.log({
                     "train/loss": losses.avg,
                     "train/lr": current_lr,
                     "train/epoch": epoch + (i + 1) / len(train_loader),
                     "step": curr_step + 1,
-                }
-                
-                # Add contrastive losses to wandb
-                if 'contrastive_loss' in outputs:
-                    wandb_metrics["train/contrastive_loss"] = outputs['contrastive_loss'].item()
-                if 'channel_contrastive' in outputs:
-                    wandb_metrics["train/channel_contrastive"] = outputs['channel_contrastive'].item()
-                if 'spatial_contrastive' in outputs:
-                    wandb_metrics["train/spatial_contrastive"] = outputs['spatial_contrastive'].item()
-                if 'cross_modal_contrastive' in outputs:
-                    wandb_metrics["train/cross_modal_contrastive"] = outputs['cross_modal_contrastive'].item()
-                    
-                wandb_run.log(wandb_metrics)
+                })
 
             if logger:
                 logger.info(

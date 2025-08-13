@@ -354,7 +354,7 @@ class UniADMemory(nn.Module):
 
         # Initialize parameters
         initialize_from_cfg(self, initializer)
-
+        
         self.use_contrastive = kwargs.get('use_contrastive', False)
         if self.use_contrastive:
             self.contrastive_loss = ContrastiveLoss(
@@ -409,28 +409,8 @@ class UniADMemory(nn.Module):
         spatial_retrieved = spatial_result['output']  # C x B x H x W
         #print(f"Spatial memory retrieved shape: {spatial_retrieved.shape}")
         spatial_retrieved = torch.permute(spatial_retrieved, (2, 1, 0))  # (H x W) x B x C
-        
-        # Contrastive learning
-        contrastive_losses = {}
-        if self.use_contrastive and self.training:
-            # Pool features for contrastive learning
-            channel_pooled = torch.mean(channel_retrieved, dim=0)  # B x C
-            spatial_pooled = torch.mean(spatial_retrieved, dim=0)  # B x C
-            
-            # Project to contrastive space
-            channel_proj_feat = self.channel_proj(channel_pooled)  # B x contrastive_dim
-            spatial_proj_feat = self.spatial_proj(spatial_pooled)  # B x contrastive_dim
-            
-            # Get labels if available
-            labels = input.get('label', None)
-            
-            # Compute contrastive loss
-            contrastive_result = self.contrastive_loss(
-                channel_proj_feat, spatial_proj_feat, labels
-            )
-            contrastive_losses.update(contrastive_result)
-        
         # Fuse channel and spatial memory features
+
         combined_features = torch.cat([channel_retrieved, spatial_retrieved], dim=-1)  # (H x W) x B x (2*C)
         memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
         
@@ -468,7 +448,7 @@ class UniADMemory(nn.Module):
         )  # B x 1 x H x W
         pred = self.upsample(pred)  # B x 1 x H x W
         
-        result = {
+        return {
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
@@ -477,11 +457,6 @@ class UniADMemory(nn.Module):
             "channel_scores": channel_result['attention_scores'],
             "spatial_ssim": spatial_result['ssim_similarity'],
         }
-        # Add contrastive losses to output
-        if contrastive_losses:
-            result.update(contrastive_losses)
-            
-        return result
 
 
 class TransformerEncoder(nn.Module):
