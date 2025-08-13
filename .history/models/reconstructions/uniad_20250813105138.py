@@ -362,8 +362,6 @@ class UniADMemory(nn.Module):
                 margin=kwargs.get('contrastive_margin', 1.0)
             )
             print(f'contrastive: {self.use_contrastive}')
-            print(f'Temperature: {kwargs.get('contrastive_temperature', 0.07)}')
-            print(f'Margin: {kwargs.get('contrastive_margin', 1.0)}')
             # Feature projection for contrastive learning
             self.channel_proj = nn.Linear(hidden_dim, kwargs.get('contrastive_dim', 128))
             self.spatial_proj = nn.Linear(hidden_dim, kwargs.get('contrastive_dim', 128))
