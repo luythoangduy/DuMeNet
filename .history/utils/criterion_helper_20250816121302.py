@@ -169,7 +169,7 @@ class CombinedMSEFocalRegionLoss(nn.Module):
 
 class ImageMSELoss(nn.Module):
     """Train a decoder for visualization of reconstructed features"""
-
+    
     def __init__(self, weight):
         super().__init__()
         self.criterion_mse = nn.MSELoss()
