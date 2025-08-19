@@ -1,6 +1,7 @@
 import argparse
 import logging
-import os
+import os, sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 import pprint
 import shutil
 import time
@@ -38,6 +39,7 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
     wandb = None
+
 
 parser = argparse.ArgumentParser(description="UniAD Framework")
 parser.add_argument("--config", default="./config.yaml")
