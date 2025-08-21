@@ -21,7 +21,7 @@ class FocalRegionLoss(nn.Module):
     Focal Region Loss from "Region-Attention-Transformer-for-Medical-Image-Restoration"
     Adapted for anomaly detection
     """
-    def __init__(self, weight, beta=1.0, epsilon=1e-3, loss_type='l1'):
+    def __init__(self, weight, beta=2.0, epsilon=1e-3, loss_type='mse'):
         super(FocalRegionLoss, self).__init__()
         self.weight = weight
         self.epsilon2 = epsilon * epsilon
@@ -67,7 +67,6 @@ class FocalRegionLoss(nn.Module):
         
         pseudo_masks = []
         for bi in range(b):
-            # FIXED: Add .detach() before .cpu().numpy()
             error_flat = error[bi].flatten().detach().cpu().numpy()
             quantiles = np.linspace(0, 1, n_regions + 1)
             thresholds = np.quantile(error_flat, quantiles)
@@ -131,10 +130,10 @@ class FocalRegionLoss(nn.Module):
 
 class SpatialRegionFocalLoss(nn.Module):
     """
-    Focal Loss dựa trên vùng không gian cố định
-    Ví dụ: feature 9x9 → chia thành 9 vùng 3x3, mỗi vùng có cùng trọng số focal
+    Spatial Region Focal Loss with proper overlap handling
+    Divides feature map into spatial regions and applies focal weighting based on region importance
     """
-    def __init__(self, weight, beta=1.0, epsilon=1e-3, loss_type='l1', 
+    def __init__(self, weight, beta=2.0, epsilon=1e-3, loss_type='mse', 
                  region_size=3, overlap=False):
         super(SpatialRegionFocalLoss, self).__init__()
         self.weight = weight
@@ -150,63 +149,13 @@ class SpatialRegionFocalLoss(nn.Module):
         
         return self.compute_spatial_focal_loss(feature_rec, feature_align)
     
-    def create_spatial_regions(self, height, width):
-        """
-        Chia feature map thành các vùng không gian cố định
-        
-        Args:
-            height, width: kích thước feature map
-            
-        Returns:
-            region_map: [H, W] - mỗi pixel được gán ID của region chứa nó
-            region_coords: dict - tọa độ của từng region
-        """
-        region_map = torch.zeros(height, width, dtype=torch.long)
-        region_coords = {}
-        region_id = 0
-        
-        if self.overlap:
-            # Chia với overlap (sliding window)
-            step = max(1, self.region_size // 2)
-        else:
-            # Chia không overlap (non-overlapping patches)
-            step = self.region_size
-        
-        for start_h in range(0, height, step):
-            for start_w in range(0, width, step):
-                end_h = min(start_h + self.region_size, height)
-                end_w = min(start_w + self.region_size, width)
-                
-                # Gán region ID cho vùng này
-                if not self.overlap:
-                    # Non-overlap: gán trực tiếp
-                    region_map[start_h:end_h, start_w:end_w] = region_id
-                else:
-                    # Overlap: chỉ gán cho pixel chưa được gán (first-come-first-serve)
-                    # Hoặc có thể dùng cách khác như weighted average
-                    mask = region_map[start_h:end_h, start_w:end_w] == 0
-                    region_map[start_h:end_h, start_w:end_w][mask] = region_id
-                
-                region_coords[region_id] = (start_h, end_h, start_w, end_w)
-                region_id += 1
-                
-                # Nếu không overlap và region này cover hết feature map thì break
-                if not self.overlap and end_h >= height and end_w >= width:
-                    break
-        
-        return region_map, region_coords
-    
     def compute_spatial_focal_loss(self, pred, target):
         """
-        Tính focal loss dựa trên vùng không gian
+        Compute spatial focal loss with proper overlap handling
         """
         b, c, h, w = pred.shape
         
-        # Tạo spatial regions
-        region_map, region_coords = self.create_spatial_regions(h, w)
-        region_map = region_map.to(pred.device)
-        
-        # Tính base loss cho từng pixel
+        # Compute base loss for each pixel
         if self.loss_type == 'l1':
             loss_metric = F.l1_loss(pred, target, reduction='none')  # [B, C, H, W]
         elif self.loss_type == 'l2' or self.loss_type == 'mse':
@@ -214,42 +163,68 @@ class SpatialRegionFocalLoss(nn.Module):
         else:
             raise ValueError(f"Unsupported loss type: {self.loss_type}")
         
-        # Average across channels
         loss_metric = torch.mean(loss_metric, dim=1)  # [B, H, W]
         
-        # Tính focal weights cho từng region
+        # Determine step size
+        if self.overlap:
+            step = max(1, self.region_size // 2)
+        else:
+            step = self.region_size
+        
         focal_weights = torch.ones_like(loss_metric)
         
         for bi in range(b):
             loss_bi = loss_metric[bi]  # [H, W]
             
-            # Tính statistics cho từng region
-            region_losses = {}
-            for region_id, (start_h, end_h, start_w, end_w) in region_coords.items():
-                region_loss = loss_bi[start_h:end_h, start_w:end_w]
-                region_losses[region_id] = torch.mean(region_loss).item()
-            
-            # Normalize region importance
-            if len(region_losses) > 1:
-                max_loss = max(region_losses.values())
-                min_loss = min(region_losses.values())
+            if self.overlap:
+                # Proper overlap handling with weighted average
+                weight_accumulator = torch.zeros_like(loss_bi)
+                count_accumulator = torch.zeros_like(loss_bi)
                 
-                for region_id, avg_loss in region_losses.items():
-                    start_h, end_h, start_w, end_w = region_coords[region_id]
-                    
-                    # Tính focal weight cho region này
-                    if max_loss > min_loss:
-                        region_importance = (avg_loss - min_loss) / (max_loss - min_loss + self.epsilon)
-                    else:
-                        region_importance = 0.5
-                    
-                    # Focal weight: regions có loss cao hơn sẽ có weight cao hơn
-                    region_weight = 1.0 + self.beta * region_importance
-                    
-                    # Gán CÙNG MỘT WEIGHT cho tất cả pixel trong region
-                    focal_weights[bi, start_h:end_h, start_w:end_w] = region_weight
+                # Collect all regions and their importance
+                for start_h in range(0, h, step):
+                    for start_w in range(0, w, step):
+                        end_h = min(start_h + self.region_size, h)
+                        end_w = min(start_w + self.region_size, w)
+                        
+                        # Calculate average loss for this region
+                        region_loss = torch.mean(loss_bi[start_h:end_h, start_w:end_w])
+                        
+                        # Add to accumulator (weighted by region importance)
+                        weight_accumulator[start_h:end_h, start_w:end_w] += region_loss
+                        count_accumulator[start_h:end_h, start_w:end_w] += 1
+                
+                # Average overlapping weights
+                # Each pixel gets average importance of all regions containing it
+                region_importance = weight_accumulator / (count_accumulator + self.epsilon)
+                
+            else:
+                # Non-overlap: direct assignment
+                region_importance = torch.zeros_like(loss_bi)
+                
+                for start_h in range(0, h, step):
+                    for start_w in range(0, w, step):
+                        end_h = min(start_h + self.region_size, h)
+                        end_w = min(start_w + self.region_size, w)
+                        
+                        region_loss = torch.mean(loss_bi[start_h:end_h, start_w:end_w])
+                        region_importance[start_h:end_h, start_w:end_w] = region_loss
+            
+            # Normalize region importance to [0, 1]
+            min_importance = torch.min(region_importance)
+            max_importance = torch.max(region_importance)
+            
+            if max_importance > min_importance:
+                normalized_importance = (region_importance - min_importance) / \
+                                      (max_importance - min_importance + self.epsilon)
+            else:
+                normalized_importance = torch.ones_like(region_importance) * 0.5
+            
+            # Apply focal weighting
+            region_weights = 1.0 + self.beta * normalized_importance
+            focal_weights[bi] = region_weights
         
-        # Apply focal weighting
+        # Apply focal weighting to loss
         weighted_loss = loss_metric * focal_weights
         
         return torch.mean(weighted_loss)
@@ -350,143 +325,6 @@ class CombinedMSESpatialFocalLoss(nn.Module):
         mse_component = self.mse_loss(feature_rec, feature_align)
         
         # Spatial focal component
-        spatial_focal_component = self.spatial_focal_loss(input)
-        
-        # Combined loss
-        total_loss = self.mse_weight * mse_component + self.spatial_focal_weight * spatial_focal_component
-        
-        return total_loss
-    
-class FixedSpatialRegionFocalLoss(nn.Module):
-    """
-    FIXED VERSION: Spatial Region Focal Loss với overlap xử lý đúng
-    """
-    def __init__(self, weight, beta=1.0, epsilon=1e-3, loss_type='l1', 
-                 region_size=3, overlap=False):
-        super(FixedSpatialRegionFocalLoss, self).__init__()
-        self.weight = weight
-        self.epsilon = epsilon
-        self.beta = beta
-        self.loss_type = loss_type
-        self.region_size = region_size
-        self.overlap = overlap
-        
-    def forward(self, input):
-        feature_rec = input["feature_rec"]
-        feature_align = input["feature_align"]
-        
-        return self.compute_spatial_focal_loss_fixed(feature_rec, feature_align)
-    
-    def compute_spatial_focal_loss_fixed(self, pred, target):
-        """
-        FIXED VERSION: Proper overlap handling
-        """
-        b, c, h, w = pred.shape
-        
-        # Tính base loss cho từng pixel
-        if self.loss_type == 'l1':
-            loss_metric = F.l1_loss(pred, target, reduction='none')  # [B, C, H, W]
-        elif self.loss_type == 'l2' or self.loss_type == 'mse':
-            loss_metric = F.mse_loss(pred, target, reduction='none')  # [B, C, H, W]
-        else:
-            raise ValueError(f"Unsupported loss type: {self.loss_type}")
-        
-        loss_metric = torch.mean(loss_metric, dim=1)  # [B, H, W]
-        
-        # Determine step size
-        if self.overlap:
-            step = max(1, self.region_size // 2)
-        else:
-            step = self.region_size
-        
-        focal_weights = torch.ones_like(loss_metric)
-        
-        for bi in range(b):
-            loss_bi = loss_metric[bi]  # [H, W]
-            
-            if self.overlap:
-                # FIXED: Proper overlap handling with weighted average
-                weight_accumulator = torch.zeros_like(loss_bi)
-                count_accumulator = torch.zeros_like(loss_bi)
-                
-                # Collect all regions and their importance
-                for start_h in range(0, h, step):
-                    for start_w in range(0, w, step):
-                        end_h = min(start_h + self.region_size, h)
-                        end_w = min(start_w + self.region_size, w)
-                        
-                        # Calculate average loss for this region
-                        region_loss = torch.mean(loss_bi[start_h:end_h, start_w:end_w])
-                        
-                        # Add to accumulator (weighted by region importance)
-                        weight_accumulator[start_h:end_h, start_w:end_w] += region_loss
-                        count_accumulator[start_h:end_h, start_w:end_w] += 1
-                
-                # Average overlapping weights
-                # Each pixel gets average importance of all regions containing it
-                region_importance = weight_accumulator / (count_accumulator + self.epsilon)
-                
-            else:
-                # Non-overlap: same as before
-                region_importance = torch.zeros_like(loss_bi)
-                
-                for start_h in range(0, h, step):
-                    for start_w in range(0, w, step):
-                        end_h = min(start_h + self.region_size, h)
-                        end_w = min(start_w + self.region_size, w)
-                        
-                        region_loss = torch.mean(loss_bi[start_h:end_h, start_w:end_w])
-                        region_importance[start_h:end_h, start_w:end_w] = region_loss
-            
-            # Normalize region importance to [0, 1]
-            min_importance = torch.min(region_importance)
-            max_importance = torch.max(region_importance)
-            
-            if max_importance > min_importance:
-                normalized_importance = (region_importance - min_importance) / \
-                                      (max_importance - min_importance + self.epsilon)
-            else:
-                normalized_importance = torch.ones_like(region_importance) * 0.5
-            
-            # Apply focal weighting
-            region_weights = 1.0 + self.beta * normalized_importance
-            focal_weights[bi] = region_weights
-        
-        # Apply focal weighting to loss
-        weighted_loss = loss_metric * focal_weights
-        
-        return torch.mean(weighted_loss)
-
-
-class FixedCombinedMSESpatialFocalLoss(nn.Module):
-    """
-    Fixed Combined MSE + Spatial Focal Loss với overlap handling đúng
-    """
-    def __init__(self, weight, mse_weight=0.4, spatial_focal_weight=0.6, 
-                 beta=1.0, epsilon=1e-3, loss_type='l1', region_size=3, overlap=False):
-        super().__init__()
-        self.weight = weight
-        self.mse_weight = mse_weight
-        self.spatial_focal_weight = spatial_focal_weight
-        
-        self.mse_loss = nn.MSELoss()
-        self.spatial_focal_loss = FixedSpatialRegionFocalLoss(
-            weight=1.0,
-            beta=beta,
-            epsilon=epsilon,
-            loss_type=loss_type,
-            region_size=region_size,
-            overlap=overlap
-        )
-    
-    def forward(self, input):
-        feature_rec = input["feature_rec"]
-        feature_align = input["feature_align"]
-        
-        # MSE component
-        mse_component = self.mse_loss(feature_rec, feature_align)
-        
-        # Fixed spatial focal component
         spatial_focal_component = self.spatial_focal_loss(input)
         
         # Combined loss
