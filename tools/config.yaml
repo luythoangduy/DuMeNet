@@ -2,7 +2,7 @@ wandb:
   enabled: true
   project: UniAD-MVTec
   entity: null
-  name: local_500_256_256_spatial_focal_only_mse_non
+  name: local_500_256_256_0.4mse_0.6spatial_mse_3non_beta2.5
   tags:
     - mvtec
     - anomaly-detection
@@ -48,19 +48,21 @@ dataset:
     - 0.229
     - 0.224
     - 0.225
-  batch_size: 16
+  batch_size: 8
   workers: 4
 
 criterion:
-  - name: FeatureSpatialFocalRegionLoss
-    type: FeatureSpatialFocalRegionLoss
+  - name: CombinedMSESpatialFocalLoss
+    type: CombinedMSESpatialFocalLoss
     kwargs:
       weight: 1.0
-      beta: 2.0
+      mse_weight: 0.4 # 40% MSE for stability
+      spatial_focal_weight: 0.6 # 60% Spatial Focal for performance
+      beta: 2.5 # Moderate focusing strength
       epsilon: 0.001
       loss_type: mse
-      region_size: 3
-      overlap: false
+      region_size: 3 # 3x3 regions
+      overlap: False
 
 trainer:
   max_epoch: 500
