@@ -143,7 +143,7 @@ wandb:
   job_type: train
   login: true
   mode: online
-  name: bottle_500_256_256_spatial_focal_only_mse_3non
+  name: bottle_500_256_256_0.4mse_0.6spatial_mse_3non_beta2
   notes: UniAD with Spatial Region Focal Loss (pure) on MVTec-AD dataset - Local Training
   project: UniAD-MVTec-single
   resume: allow

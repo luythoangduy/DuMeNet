@@ -22,7 +22,7 @@ def train_single_class(cls_name, base_config):
     try:
         # Create config for this class
         cls_config = copy.deepcopy(base_config)
-        cls_config['wandb']['name'] = f"{cls_name}_500_256_256_spatial_focal_only_mse_3non"
+        cls_config['wandb']['name'] = f"{cls_name}_500_256_256_0.4mse_0.6spatial_mse_3non_beta2"
         cls_config['wandb']['project'] = "UniAD-MVTec-single"
         
         # Save temporary config file
@@ -36,6 +36,7 @@ def train_single_class(cls_name, base_config):
         cmd = [
             sys.executable, "-u", "tools/train_val.py",
             "--config", config_path,
+            "--class_name", cls_name,
             "--single_gpu"
         ]
         
