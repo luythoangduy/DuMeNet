@@ -210,15 +210,32 @@ class SpatialRegionFocalLoss(nn.Module):
                         region_loss = torch.mean(loss_bi[start_h:end_h, start_w:end_w])
                         region_importance[start_h:end_h, start_w:end_w] = region_loss
             
-            # Normalize region importance to [0, 1]
-            min_importance = torch.min(region_importance)
-            max_importance = torch.max(region_importance)
+            # # Normalize region importance to [0, 1]
+            # min_importance = torch.min(region_importance)
+            # max_importance = torch.max(region_importance)
             
-            if max_importance > min_importance:
-                normalized_importance = (region_importance - min_importance) / \
-                                      (max_importance - min_importance + self.epsilon)
+            # if max_importance > min_importance:
+            #     normalized_importance = (region_importance - min_importance) / \
+            #                           (max_importance - min_importance + self.epsilon)
+            # else:
+            #     normalized_importance = torch.ones_like(region_importance) * 0.5
+            
+            # Z-score + Sigmoid normalization (use existing region_importance tensor)
+            median_loss = torch.median(region_importance)
+            std_loss = torch.std(region_importance)
+
+            if std_loss > self.epsilon:
+                z_scores = (region_importance - median_loss) / std_loss
+                normalized_importance = torch.sigmoid(z_scores)
             else:
-                normalized_importance = torch.ones_like(region_importance) * 0.5
+                # Fallback: relative ranking 
+                region_flat = region_importance.flatten()
+                _, indices = torch.sort(region_flat, descending=True)
+                normalized_flat = torch.zeros_like(region_flat)
+                for i, idx in enumerate(indices):
+                    # Higher loss gets higher score (for higher focal weight)
+                    normalized_flat[idx] = (len(indices) - 1 - i) / (len(indices) - 1) if len(indices) > 1 else 0.5
+                normalized_importance = normalized_flat.reshape_as(region_importance)
             
             # Apply focal weighting
             region_weights = 1.0 + self.beta * normalized_importance

@@ -22,7 +22,7 @@ def train_single_class(cls_name, base_config):
     try:
         # Create config for this class
         cls_config = copy.deepcopy(base_config)
-        cls_config['wandb']['name'] = f"{cls_name}_500_256_256_0.4mse_0.6spatial_mse_3non_beta2"
+        cls_config['wandb']['name'] = f"{cls_name}_zscore_sigmol_500_256_256_0mse_1spatial_mse_3non_beta2"
         cls_config['wandb']['project'] = "UniAD-MVTec-single"
         
         # Save temporary config file
@@ -79,7 +79,7 @@ def train_single_class(cls_name, base_config):
 
 def main():
     """Main training function"""
-    print("UniAD Multi-Class Training")
+    print("UniAD Single-Class Training")
     print("=" * 50)
     
     # Check if we're in the right directory
@@ -104,9 +104,10 @@ def main():
     
     # Class list
     class_name_list = [
-        "bottle", "cable", "capsule", "hazelnut", "metal_nut",
-        "pill", "screw", "toothbrush", "transistor", "zipper",
-        "carpet", "grid", "leather", "tile", "wood"
+        # "bottle", "cable", "capsule", "hazelnut", "metal_nut",
+        # "pill", "screw", "toothbrush", "transistor", "zipper",
+        # "carpet", "grid", "leather", "tile", "wood"
+        'toothbrush'
     ]
     
     print(f"Training {len(class_name_list)} classes sequentially")
