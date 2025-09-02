@@ -28,6 +28,7 @@ from utils.misc_helper import (
     set_random_seed,
     update_config,
     init_wandb,
+    EarlyStopping,
 )
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
@@ -187,6 +188,19 @@ def main():
     key_metric = config.evaluator["key_metric"]
     best_metric = 0
     last_epoch = 0
+    
+    early_stopping = None
+    if config.trainer.get("early_stopping", {}).get("enabled", False):
+        early_stopping_config = config.trainer.early_stopping
+        early_stopping = EarlyStopping(
+            patience=early_stopping_config.get("patience", 10),
+            min_delta=early_stopping_config.get("min_delta", 0),
+            mode=early_stopping_config.get("mode", "min"),
+            verbose=early_stopping_config.get("verbose", True),
+            restore_best_weights=early_stopping_config.get("restore_best_weights", True)
+        )
+        if rank == 0 and logger:
+            logger.info(f"Early stopping enabled: patience={early_stopping.patience}, mode={early_stopping.mode}")
 
     # load model: auto_resume > resume_model > load_path
     auto_resume = config.saver.get("auto_resume", True)
@@ -225,8 +239,17 @@ def main():
                 }, step=0)
 
     # Build dataloader - use distributed=False for single GPU
-    train_loader, val_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode, class_name=dataset_class_name)
-
+    train_loader, val_loader, test_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode, class_name=dataset_class_name)
+    # Handle trường hợp không có validation split
+    if val_loader is None:
+        val_loader = test_loader
+        if rank == 0 and logger:
+            logger.info("No validation split found, early stopping will use test set loss")
+            logger.info("Test set will be used for both early stopping and metrics evaluation")
+    else:
+        if rank == 0 and logger:
+            logger.info("Validation split found from training data")
+            logger.info("Val set: early stopping | Test set: metrics evaluation")
     if args.evaluate:
         validate(val_loader, model, single_gpu_mode)
         return
@@ -246,7 +269,10 @@ def main():
         
         if not single_gpu_mode:
             train_loader.sampler.set_epoch(epoch)
-            val_loader.sampler.set_epoch(epoch)
+            if hasattr(val_loader, 'sampler') and hasattr(val_loader.sampler, 'set_epoch'):
+                val_loader.sampler.set_epoch(epoch)
+            if hasattr(test_loader, 'sampler') and hasattr(test_loader.sampler, 'set_epoch'):
+                test_loader.sampler.set_epoch(epoch)
         last_iter = epoch * len(train_loader)
         train_one_epoch(
             train_loader,
@@ -265,8 +291,46 @@ def main():
         lr_scheduler.step(epoch)
 
         if (epoch + 1) % config.trainer.val_freq_epoch == 0:
-            ret_metrics = validate(val_loader, model, single_gpu_mode, wandb_run, epoch)
-            # only ret_metrics on rank0 is not empty
+            # VALIDATION: Chỉ để early stopping (nếu có val_loader)
+            if val_loader is not None and val_loader != test_loader:
+                val_loss = validate_for_early_stopping(val_loader, model, single_gpu_mode)
+            else:
+                val_loss = None
+            
+            # TEST: Giữ nguyên logic cũ - evaluate metrics trên test set
+            ret_metrics, test_loss = validate(test_loader, model, single_gpu_mode, wandb_run, epoch)
+            
+            # Early stopping dựa trên val_loss (nếu có), không thì dùng test_loss
+            early_stop_loss = val_loss if val_loss is not None else test_loss
+            if rank == 0 and logger:
+                if val_loss is not None:
+                    logger.info(f"Early stopping monitoring: val_loss={val_loss:.6f}, test_loss={test_loss:.6f}")
+                else:
+                    logger.info(f"Early stopping monitoring: test_loss={test_loss:.6f} (no validation split)")
+            # Early stopping check
+            if early_stopping is not None and rank == 0:
+                should_stop = early_stopping(early_stop_loss, model_for_params, epoch + 1)
+                
+                if wandb_run:
+                    wandb_run.log({
+                        "early_stopping/val_loss": val_loss if val_loss else 0,
+                        "early_stopping/test_loss": test_loss,
+                        "early_stopping/monitor_loss": early_stop_loss,
+                        "early_stopping/wait": early_stopping.wait,
+                        "early_stopping/best_metric": early_stopping.best_metric,
+                    })
+                
+                if should_stop:
+                    if logger:
+                        logger.info(f"Early stopping triggered at epoch {epoch + 1}")
+                        logger.info(f"Best loss: {early_stopping.best_metric:.6f} at epoch {early_stopping.best_epoch}")
+                    
+                    if early_stopping.restore_best_weights:
+                        early_stopping.restore_best_weights_to_model(model_for_params)
+                    
+                    break  # Stop training
+            
+            # Regular metric tracking (only ret_metrics on rank0 is not empty)
             if rank == 0:
                 ret_key_metric = ret_metrics[key_metric]
                 is_best = ret_key_metric >= best_metric
@@ -501,7 +565,41 @@ def validate(val_loader, model, single_gpu_mode, wandb_run=None, epoch=None):
                 config.dataset.image_reader,
             )
     model.train()
-    return ret_metrics
+    return ret_metrics, final_loss
+
+def validate_for_early_stopping(val_loader, model, single_gpu_mode):
+    """Validation chỉ để tính loss cho early stopping"""
+    model.eval()
+    losses = AverageMeter(0)
+    criterion = build_criterion(config.criterion)
+    
+    if single_gpu_mode:
+        rank = 0
+    else:
+        rank = dist.get_rank()
+    
+    with torch.no_grad():
+        for input in val_loader:
+            outputs = model(input)
+            loss = 0
+            for name, criterion_loss in criterion.items():
+                weight = criterion_loss.weight
+                loss += weight * criterion_loss(outputs)
+            losses.update(loss.item(), len(outputs["filename"]))
+    
+    # Gather results cho distributed training
+    if single_gpu_mode:
+        final_loss = losses.avg
+    else:
+        dist.barrier()
+        loss_sum = torch.Tensor([losses.avg * losses.count]).cuda()
+        total_num = torch.Tensor([losses.count]).cuda()
+        dist.all_reduce(loss_sum, async_op=True)
+        dist.all_reduce(total_num, async_op=True)
+        final_loss = loss_sum.item() / total_num.item()
+    
+    model.train()
+    return final_loss
 
 
 if __name__ == "__main__":

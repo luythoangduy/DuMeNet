@@ -293,3 +293,84 @@ def init_wandb(config, args=None):
     except Exception as e:
         print(f"Warning: Failed to initialize wandb: {e}")
         return None
+    
+class EarlyStopping:
+    """Early stopping to stop training when validation loss doesn't improve."""
+    
+    def __init__(self, patience=7, min_delta=0, mode='min', verbose=True, restore_best_weights=True):
+        """
+        Args:
+            patience (int): Number of validation epochs with no improvement after which training stops
+            min_delta (float): Minimum change to qualify as an improvement
+            mode (str): 'min' for loss (lower is better), 'max' for accuracy (higher is better)
+            verbose (bool): Print messages
+            restore_best_weights (bool): Whether to restore model to best weights
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.verbose = verbose
+        self.restore_best_weights = restore_best_weights
+        
+        self.wait = 0
+        self.stopped_epoch = 0
+        self.best_weights = None
+        self.best_epoch = 0
+        
+        if mode == 'min':
+            self.best_metric = float('inf')
+            self.monitor_op = lambda current, best: current < best - min_delta
+        elif mode == 'max':
+            self.best_metric = float('-inf')
+            self.monitor_op = lambda current, best: current > best + min_delta
+        else:
+            raise ValueError(f"Mode {mode} not supported. Use 'min' or 'max'")
+    
+    def __call__(self, current_metric, model=None, epoch=None):
+        """
+        Check if training should stop.
+        
+        Args:
+            current_metric: Current validation metric
+            model: Model to save best weights (optional)
+            epoch: Current epoch (optional)
+            
+        Returns:
+            bool: True if training should stop
+        """
+        if self.monitor_op(current_metric, self.best_metric):
+            self.best_metric = current_metric
+            self.wait = 0
+            self.best_epoch = epoch
+            
+            # Save best weights
+            if model is not None and self.restore_best_weights:
+                self.best_weights = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            
+            if self.verbose:
+                print(f"Validation metric improved to {current_metric:.6f}")
+        else:
+            self.wait += 1
+            if self.verbose:
+                print(f"Validation metric did not improve. Patience: {self.wait}/{self.patience}")
+        
+        if self.wait >= self.patience:
+            self.stopped_epoch = epoch
+            if self.verbose:
+                print(f"Early stopping triggered at epoch {epoch}")
+                print(f"Best metric: {self.best_metric:.6f} at epoch {self.best_epoch}")
+            return True
+        
+        return False
+    
+    def restore_best_weights_to_model(self, model):
+        """Restore the best weights to the model."""
+        if self.best_weights is not None:
+            # Move weights back to GPU if needed
+            device = next(model.parameters()).device
+            best_weights_gpu = {k: v.to(device) for k, v in self.best_weights.items()}
+            model.load_state_dict(best_weights_gpu)
+            if self.verbose:
+                print(f"Restored best weights from epoch {self.best_epoch}")
+        else:
+            print("No best weights to restore")
