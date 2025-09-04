@@ -160,5 +160,13 @@ class MobileSAMBackbone(nn.Module):
         else:
             features = self.image_encoder(batch_images)
         
+        # Downsample features to 14x14 to match EfficientNet output size
+        features = torch.nn.functional.interpolate(
+            features, 
+            size=(14, 14), 
+            mode='bilinear', 
+            align_corners=False
+        )
+        
         # Return single feature map (no multi-scale processing)
         return {'features': [features]}
