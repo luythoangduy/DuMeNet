@@ -1,0 +1,196 @@
+[2025-09-04 17:52:15,837][   train_val.py][line: 127][    INFO] args: Namespace(config='config_bottle_temp.yaml', class_name='bottle', evaluate=False, local_rank=None, single_gpu=True)
+[2025-09-04 17:52:15,839][   train_val.py][line: 128][    INFO] config: {'criterion': [{'kwargs': {'weight': 1.0},
+                'name': 'FeatureMSELoss',
+                'type': 'FeatureMSELoss'}],
+ 'dataset': {'batch_size': 8,
+             'image_reader': {'kwargs': {'color_mode': 'RGB',
+                                         'image_dir': './data/MVTec-AD/mvtec_anomaly_detection'},
+                              'type': 'opencv'},
+             'input_size': [224, 224],
+             'pixel_mean': [0.485, 0.456, 0.406],
+             'pixel_std': [0.229, 0.224, 0.225],
+             'test': {'meta_file': './data/MVTec-AD/test.json'},
+             'train': {'hflip': False,
+                       'meta_file': './data/MVTec-AD/train.json',
+                       'rebalance': False,
+                       'rotate': False,
+                       'vflip': False},
+             'type': 'custom',
+             'workers': 4},
+ 'evaluator': {'eval_dir': 'bottle\\result_eval_temp',
+               'key_metric': 'mean_pixel_auc',
+               'metrics': {'auc': [{'name': 'std'},
+                                   {'kwargs': {'avgpool_size': [16, 16]},
+                                    'name': 'max'},
+                                   {'name': 'pixel'}]},
+               'save_dir': 'result_eval_temp',
+               'vis_compound': {'max_score': None,
+                                'min_score': None,
+                                'save_dir': './tools/vis_compound'}},
+ 'exp_path': 'bottle',
+ 'frozen_layers': ['backbone'],
+ 'log_path': 'bottle\\log_mobilesam/',
+ 'net': [{'frozen': True,
+          'kwargs': {'checkpoint_path': 'D:\\FPTU-sourse\\Term5\\ImageAnomalyDetection\\Code\\IAD\\mobile_sam_checkpoint\\mobile_sam.pt',
+                     'model_type': 'vit_t',
+                     'outlayers': [4],
+                     'outstrides': [16],
+                     'pretrained': True},
+          'name': 'backbone',
+          'type': 'models.backbones.mobilesam_vit_t'},
+         {'kwargs': {'activation': 'relu',
+                     'channel_memory_size': 256,
+                     'dim_feedforward': 1024,
+                     'dropout': 0.1,
+                     'feature_jitter': {'prob': 1.0, 'scale': 20.0},
+                     'feature_size': [14, 14],
+                     'hidden_dim': 256,
+                     'initializer': {'method': 'xavier_uniform'},
+                     'neighbor_mask': {'mask': [False, False, False],
+                                       'neighbor_size': [7, 7]},
+                     'nhead': 8,
+                     'normalize_before': False,
+                     'num_decoder_layers': 4,
+                     'num_encoder_layers': 4,
+                     'outplanes': [256],
+                     'pos_embed_type': 'learned',
+                     'save_recon': {'save_dir': 'result_recon'},
+                     'spatial_memory_size': 256},
+          'name': 'reconstruction',
+          'prev': 'backbone',
+          'type': 'models.reconstructions.UniADMemory'}],
+ 'port': 11111,
+ 'random_seed': 133,
+ 'save_path': 'bottle\\checkpoints_mobilesam/',
+ 'saver': {'always_save': False,
+           'auto_resume': False,
+           'load_path': 'None',
+           'log_dir': 'log_mobilesam/',
+           'save_dir': 'checkpoints_mobilesam/'},
+ 'trainer': {'clip_max_norm': 0.1,
+             'lr_scheduler': {'kwargs': {'gamma': 0.1, 'step_size': 500},
+                              'type': 'StepLR'},
+             'max_epoch': 500,
+             'optimizer': {'kwargs': {'betas': [0.9, 0.999],
+                                      'lr': 0.0001,
+                                      'weight_decay': 0.0001},
+                           'type': 'AdamW'},
+             'print_freq_step': 100,
+             'tb_freq_step': 1,
+             'val_freq_epoch': 1},
+ 'version': 'v1.0.0',
+ 'wandb': {'api_key': '0f2ca680372a916c31aab5ede7bbefab410fe503',
+           'dir': None,
+           'enabled': False,
+           'entity': None,
+           'group': None,
+           'job_type': 'train',
+           'login': True,
+           'mode': 'online',
+           'name': 'bottle_zscore_sigmol_500_256_256_0mse_1spatial_mse_3non_beta2',
+           'notes': 'UniAD with Spatial Region Focal Loss (pure) on MVTec-AD '
+                    'dataset - Local Training',
+           'project': 'UniAD-MVTec-single',
+           'resume': 'allow',
+           'run_id': None,
+           'tags': ['mvtec',
+                    'anomaly-detection',
+                    'spatial-focal-loss',
+                    'local']}}
+[2025-09-04 17:52:15,839][   train_val.py][line: 135][    INFO] Training separate class: bottle
+[2025-09-04 17:52:15,839][   train_val.py][line: 136][    INFO] Experiment path: bottle
+[2025-09-04 17:52:17,454][   train_val.py][line: 174][    INFO] layers: ['backbone', 'reconstruction']
+[2025-09-04 17:52:17,454][   train_val.py][line: 175][    INFO] active layers: ['reconstruction']
+[2025-09-04 17:52:17,455][   train_val.py][line: 219][    INFO] Loaded model from: bottle\None
+[2025-09-04 17:52:17,455][custom_dataset.py][line:  36][    INFO] building CustomDataset from: ./data/MVTec-AD/train.json
+[2025-09-04 17:52:17,464][custom_dataset.py][line:  96][    INFO] Dataset loaded: 209 samples (filtered by class: bottle)
+[2025-09-04 17:52:17,464][custom_dataset.py][line:  36][    INFO] building CustomDataset from: ./data/MVTec-AD/test.json
+[2025-09-04 17:52:17,470][custom_dataset.py][line:  96][    INFO] Dataset loaded: 83 samples (filtered by class: bottle)
+[2025-09-04 17:52:17,471][   train_val.py][line: 239][    INFO] Starting training from epoch 1/500
+[2025-09-04 17:53:25,452][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 17:53:25,453][   train_val.py][line: 474][    INFO]  * Loss 0.00783	total_num=83
+[2025-09-04 17:53:28,244][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel  |
+|:---------:|:--------:|:--------:|:-------:|
+|  bottle   | 0.836508 | 0.553175 | 0.7199  |
+|   mean    | 0.836508 | 0.553175 | 0.7199  |
+[2025-09-04 17:54:32,583][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 17:54:32,583][   train_val.py][line: 474][    INFO]  * Loss 0.00648	total_num=83
+[2025-09-04 17:54:35,367][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel   |
+|:---------:|:--------:|:--------:|:--------:|
+|  bottle   | 0.800794 | 0.534921 | 0.718546 |
+|   mean    | 0.800794 | 0.534921 | 0.718546 |
+[2025-09-04 17:55:40,924][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 17:55:40,924][   train_val.py][line: 474][    INFO]  * Loss 0.00545	total_num=83
+[2025-09-04 17:55:43,928][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel   |
+|:---------:|:--------:|:--------:|:--------:|
+|  bottle   | 0.769841 | 0.543651 | 0.749998 |
+|   mean    | 0.769841 | 0.543651 | 0.749998 |
+[2025-09-04 17:56:15,625][   train_val.py][line: 390][    INFO] Epoch: [4/500]	Iter: [100/13500]	Time 0.50 (1.65)	Data 0.00 (1.11)	Loss 0.02160 (0.02323)	LR 0.00010	
+[2025-09-04 17:56:47,305][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 17:56:47,306][   train_val.py][line: 474][    INFO]  * Loss 0.00483	total_num=83
+[2025-09-04 17:56:50,108][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std   |   max    |  pixel   |
+|:---------:|:-------:|:--------:|:--------:|
+|  bottle   | 0.69127 | 0.543651 | 0.772765 |
+|   mean    | 0.69127 | 0.543651 | 0.772765 |
+[2025-09-04 17:57:53,300][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 17:57:53,300][   train_val.py][line: 474][    INFO]  * Loss 0.00483	total_num=83
+[2025-09-04 17:57:56,119][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel   |
+|:---------:|:--------:|:--------:|:--------:|
+|  bottle   | 0.604762 | 0.531746 | 0.791796 |
+|   mean    | 0.604762 | 0.531746 | 0.791796 |
+[2025-09-04 17:58:59,678][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 17:58:59,678][   train_val.py][line: 474][    INFO]  * Loss 0.00383	total_num=83
+[2025-09-04 17:59:02,485][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std   |   max    |  pixel   |
+|:---------:|:-------:|:--------:|:--------:|
+|  bottle   | 0.64127 | 0.511905 | 0.789649 |
+|   mean    | 0.64127 | 0.511905 | 0.789649 |
+[2025-09-04 18:00:00,866][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 18:00:00,867][   train_val.py][line: 474][    INFO]  * Loss 0.00462	total_num=83
+[2025-09-04 18:00:03,510][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel   |
+|:---------:|:--------:|:--------:|:--------:|
+|  bottle   | 0.537302 | 0.500794 | 0.797899 |
+|   mean    | 0.537302 | 0.500794 | 0.797899 |
+[2025-09-04 18:00:26,990][   train_val.py][line: 390][    INFO] Epoch: [8/500]	Iter: [200/13500]	Time 0.47 (2.11)	Data 0.00 (1.59)	Loss 0.01457 (0.01501)	LR 0.00010	
+[2025-09-04 18:00:58,406][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 18:00:58,406][   train_val.py][line: 474][    INFO]  * Loss 0.00408	total_num=83
+[2025-09-04 18:01:00,902][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel   |
+|:---------:|:--------:|:--------:|:--------:|
+|  bottle   | 0.572222 | 0.512698 | 0.798532 |
+|   mean    | 0.572222 | 0.512698 | 0.798532 |
+[2025-09-04 18:02:09,360][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 18:02:09,361][   train_val.py][line: 474][    INFO]  * Loss 0.00385	total_num=83
+[2025-09-04 18:02:11,735][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max   |  pixel   |
+|:---------:|:--------:|:-------:|:--------:|
+|  bottle   | 0.600794 | 0.50873 | 0.790883 |
+|   mean    | 0.600794 | 0.50873 | 0.790883 |
+[2025-09-04 18:03:06,503][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 18:03:06,503][   train_val.py][line: 474][    INFO]  * Loss 0.00334	total_num=83
+[2025-09-04 18:03:08,836][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std   |   max    |  pixel   |
+|:---------:|:-------:|:--------:|:--------:|
+|  bottle   | 0.56746 | 0.520635 | 0.794829 |
+|   mean    | 0.56746 | 0.520635 | 0.794829 |
+[2025-09-04 18:04:05,359][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 18:04:05,359][   train_val.py][line: 474][    INFO]  * Loss 0.00413	total_num=83
+[2025-09-04 18:04:07,723][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel   |
+|:---------:|:--------:|:--------:|:--------:|
+|  bottle   | 0.559524 | 0.531746 | 0.803587 |
+|   mean    | 0.559524 | 0.531746 | 0.803587 |
+[2025-09-04 18:04:27,250][   train_val.py][line: 390][    INFO] Epoch: [12/500]	Iter: [300/13500]	Time 0.48 (6.41)	Data 0.00 (5.82)	Loss 0.01150 (0.01174)	LR 0.00010	
+[2025-09-04 18:05:03,464][   train_val.py][line: 472][    INFO] Gathering final results ...
+[2025-09-04 18:05:03,464][   train_val.py][line: 474][    INFO]  * Loss 0.00346	total_num=83
+[2025-09-04 18:05:06,060][ eval_helper.py][line: 222][    INFO] 
+|  clsname  |   std    |   max    |  pixel   |
+|:---------:|:--------:|:--------:|:--------:|
+|  bottle   | 0.503968 | 0.511905 | 0.804269 |
+|   mean    | 0.503968 | 0.511905 | 0.804269 |
