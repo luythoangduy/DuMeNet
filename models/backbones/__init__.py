@@ -1,5 +1,6 @@
 from .efficientnet import *  # noqa F401
 from .resnet import *  # noqa F401
+from .mobileSAM import *  # noqa F401
 
 backbone_info = {
     "resnet18": {
@@ -68,5 +69,10 @@ backbone_info = {
         "blocks": [2, 8, 14, 30, 44],
         "planes": [32, 40, 72, 200, 576],
         "strides": [2, 4, 8, 16, 32],
+    },
+    "mobilesam_vit_t": {
+        "layers": [4],
+        "planes": [256],
+        "strides": [16],
     },
 }
