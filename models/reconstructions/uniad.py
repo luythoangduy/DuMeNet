@@ -218,6 +218,8 @@ class UniADMemory(nn.Module):
         self.feature_size = feature_size
         self.num_queries = feature_size[0] * feature_size[1]
         self.feature_jitter = feature_jitter
+        print(f"Feature Size: {self.feature_size}")
+        print(f'hidden_dim: {hidden_dim}')
         self.pos_embed = build_position_embedding(
             pos_embed_type, feature_size, hidden_dim
         )
@@ -226,6 +228,11 @@ class UniADMemory(nn.Module):
 
         # Input projection
         self.input_proj = nn.Linear(inplanes[0], hidden_dim)
+        
+        # Feature normalization option
+        self.enable_feature_norm = kwargs.get('enable_feature_norm', False)
+        self.enable_sigmoid_output = kwargs.get('enable_sigmoid_output', False)
+        self.use_softmax_anomaly_map = kwargs.get('use_softmax_anomaly_map', False)
         
         # Memory modules configuration
         self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
@@ -338,7 +345,10 @@ class UniADMemory(nn.Module):
             
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        
+        # Apply feature normalization if enabled
+        if self.enable_feature_norm:
+            feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         # Get positional embeddings
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
         
@@ -384,7 +394,10 @@ class UniADMemory(nn.Module):
         
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
-        feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
+        
+        # Apply sigmoid if enabled
+        if self.enable_sigmoid_output:
+            feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
         # Reshape back to spatial representation
         feature_rec = rearrange(
             feature_rec_tokens, "(h w) b c -> b c h w", h=self.feature_size[0]
@@ -404,11 +417,24 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        feature_align = torch.sigmoid(feature_align) 
+        if self.enable_sigmoid_output:
+            feature_align = torch.sigmoid(feature_align)
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
         )  # B x 1 x H x W
         pred = self.upsample(pred)  # B x 1 x H x W
+        
+        # Apply softmax normalization to anomaly map if enabled
+        if self.use_softmax_anomaly_map:
+            B, C, H, W = pred.shape
+            # Use in-place operations to save memory
+            with torch.no_grad():
+                pred_flat = pred.view(B, C, -1)
+                # Apply min-max normalization instead of softmax to avoid memory issues
+                pred_min = pred_flat.min(dim=2, keepdim=True)[0].unsqueeze(-1)
+                pred_max = pred_flat.max(dim=2, keepdim=True)[0].unsqueeze(-1)
+                pred_norm = (pred - pred_min) / (pred_max - pred_min + 1e-8)
+                pred.data = pred_norm.data
         
         # Prepare output dictionary based on available memories
         output_dict = {
