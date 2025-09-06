@@ -350,6 +350,22 @@ class CombinedMSESpatialFocalLoss(nn.Module):
         return total_loss
 
 
+class ChannelContrastiveLoss(nn.Module):
+    """Contrastive Loss for Channel Memory Module"""
+    
+    def __init__(self, weight):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, input):
+        # Check if channel contrastive loss is available in the input
+        if "channel_contrastive_loss" not in input:
+            # Return zero loss if channel memory is not being used
+            return torch.tensor(0.0, device=next(iter(input.values())).device, requires_grad=True)
+        
+        return input["channel_contrastive_loss"]
+
+
 class ImageMSELoss(nn.Module):
     """Train a decoder for visualization of reconstructed features"""
     

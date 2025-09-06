@@ -35,6 +35,51 @@ class ChannelMemoryModule(nn.Module):
         self.key_proj = nn.Linear(feature_dim, feature_dim, bias=False)
         self.value_proj = nn.Linear(feature_dim, feature_dim, bias=False)
         
+        # Contrastive loss parameters
+        self.temperature = kwargs.get('contrastive_temperature', 0.07)
+    
+    def compute_contrastive_loss(self, queries, keys, attention_scores):
+        """
+        Compute contrastive loss for channel memory module
+        
+        Args:
+            queries: [N_tokens * batch_size, feature_dim] - query features
+            keys: [mem_dim, feature_dim] - memory key features  
+            attention_scores: [N_tokens * batch_size, mem_dim] - similarity scores
+            
+        Returns:
+            contrastive_loss: scalar tensor - contrastive loss value
+        """
+        # Normalize features for cosine similarity
+        queries_norm = F.normalize(queries, p=2, dim=1)  # [N_tokens * batch_size, feature_dim]
+        keys_norm = F.normalize(keys, p=2, dim=1)  # [mem_dim, feature_dim]
+        
+        # Compute normalized similarity matrix: queries x keys
+        sim_matrix = torch.mm(queries_norm, keys_norm.t())  # [N_tokens * batch_size, mem_dim]
+        sim_matrix = sim_matrix / self.temperature  # Scale by temperature
+        
+        # Find the most similar memory slot for each query (positive sample)
+        # This is the argmax of attention scores
+        positive_indices = torch.argmax(attention_scores, dim=1)  # [N_tokens * batch_size]
+        
+        # Extract positive similarities
+        batch_indices = torch.arange(queries.shape[0], device=queries.device)
+        positive_sim = sim_matrix[batch_indices, positive_indices]  # [N_tokens * batch_size]
+        
+        # For contrastive loss: positive should be high, negatives should be low
+        # Use InfoNCE loss: -log(exp(positive) / sum(exp(all_similarities)))
+        exp_sim = torch.exp(sim_matrix)  # [N_tokens * batch_size, mem_dim]
+        exp_positive = torch.exp(positive_sim)  # [N_tokens * batch_size]
+        
+        # Sum over all memory slots (denominator)
+        sum_exp_sim = torch.sum(exp_sim, dim=1)  # [N_tokens * batch_size]
+        
+        # InfoNCE loss
+        contrastive_loss = -torch.log(exp_positive / (sum_exp_sim + 1e-8))  # [N_tokens * batch_size]
+        
+        # Return mean loss
+        return torch.mean(contrastive_loss)
+        
     def forward(self, input_tokens):
         """
         Args:
@@ -69,11 +114,15 @@ class ChannelMemoryModule(nn.Module):
         # Reshape back to original format
         output_tokens = output_flat.view(N_tokens, batch_size, feature_dim)  # [N_tokens, batch_size, feature_dim]
         
+        # Compute contrastive loss
+        contrastive_loss = self.compute_contrastive_loss(queries, keys, attention_scores)
+        
         return {
             'output': output_tokens,
             'att_weight': att_weight,
             'attention_scores': attention_scores,
-            'memory': self.memory
+            'memory': self.memory,
+            'contrastive_loss': contrastive_loss
         }
 
 
@@ -422,6 +471,7 @@ class UniADMemory(nn.Module):
             output_dict.update({
                 "channel_attention": channel_result['att_weight'],
                 "channel_scores": channel_result['attention_scores'],
+                "channel_contrastive_loss": channel_result['contrastive_loss'],
             })
         
         if spatial_result is not None:
