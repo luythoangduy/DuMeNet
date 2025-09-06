@@ -91,7 +91,7 @@ trainer:
 #   save_dir: checkpoints/
 #   log_dir: log/
 saver:
-  auto_resume: False
+  auto_resume: True
   always_save: False
   load_path: None
   save_dir: checkpoints_mobilesam/
