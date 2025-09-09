@@ -1,5 +1,5 @@
 wandb:
-  enabled: true
+  enabled: false
   project: UniAD-MVTec-single
   entity: null
   name: local_500_256_256_0.4mse_0.6spatial_mse_3non_beta2
@@ -56,13 +56,10 @@ criterion:
     type: FeatureMSELoss
     kwargs:
       weight: 1.0
-      # mse_weight: 0 # 40% MSE for stability
-      # spatial_focal_weight: 1 # 60% Spatial Focal for performance
-      # beta: 2 # Moderate focusing strength
-      # epsilon: 0.001
-      # loss_type: mse
-      # region_size: 3 # 3x3 regions
-      # overlap: False
+  - name: ChannelContrastiveLoss
+    type: ChannelContrastiveLoss
+    kwargs:
+      weight: 0.1
 
 trainer:
   max_epoch: 500
@@ -144,8 +141,9 @@ net:
       dropout: 0.1
       activation: relu
       normalize_before: false
-      memory_mode: spatial # Options: 'channel', 'spatial', 'both', 'none'
+      memory_mode: channel # Options: 'channel', 'spatial', 'both', 'none'
       fusion_mode: concat # Options: 'concat', 'add', 'multiply', 'attention', 'gate'
+      contrastive_temperature: 0.07 # Temperature for contrastive loss
       channel_memory_size: 256
       spatial_memory_size: 256
       feature_jitter:
