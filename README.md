@@ -13,7 +13,7 @@ Image anomaly detection (IAD) has emerged as a critical task in numerous real-wo
 
 ## Architecture
 
-![DuMeNet Architecture Overview](images/screenshot.png)
+![DuMeNet Architecture Overview](DuMeNet_Overview.png)
 
 ## MVTec-AD
 - **Create the MVTec-AD dataset directory**. Download the MVTec-AD dataset from [here](https://www.mvtec.com/company/research/datasets/mvtec-ad). Unzip the file and move some to `./data/MVTec-AD/`. The MVTec-AD dataset directory should be as follows. 
