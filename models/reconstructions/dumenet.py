@@ -227,6 +227,7 @@ class UniADMemory(nn.Module):
         
         # Memory modules configuration
         self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
+        self.fusion_mode = kwargs.get('fusion_mode', 'concat')  # Default: 'concat', Options: 'add', 'multiply', 'attention', 'gate'
         self.channel_memory_size = kwargs.get('channel_memory_size', 256)
         self.spatial_memory_size = kwargs.get('spatial_memory_size', 256)
         
@@ -293,14 +294,42 @@ class UniADMemory(nn.Module):
             return_intermediate=False,
         )
         
-        # Feature fusion layer - adapt based on memory mode
+        # Feature fusion layer - adapt based on memory mode and fusion method
         fusion_input_dim = hidden_dim
         if self.use_channel_memory and self.use_spatial_memory:
-            fusion_input_dim = hidden_dim * 2
+            if self.fusion_mode == 'concat':
+                print("fusion mode: concat")
+                fusion_input_dim = hidden_dim * 2
+                self.fusion_layer = nn.Linear(fusion_input_dim, hidden_dim)
+            elif self.fusion_mode == 'add' or self.fusion_mode == 'multiply':
+                print("fusion mode: add/multiply")
+                # No parameters needed for these operations
+                self.fusion_layer = nn.Identity()
+            elif self.fusion_mode == 'attention':
+                print("fusion mode: attention")
+                # Attention-based fusion
+                self.query_proj_fusion = nn.Linear(hidden_dim, hidden_dim, bias=False)
+                self.key_proj_fusion = nn.Linear(hidden_dim, hidden_dim, bias=False)
+                self.value_proj_fusion = nn.Linear(hidden_dim, hidden_dim, bias=False)
+                self.fusion_scale = 1.0 / math.sqrt(hidden_dim)
+                self.fusion_layer = nn.Identity()
+            elif self.fusion_mode == 'gate':
+                print("fusion mode: gate")
+                # Gated fusion mechanism
+                self.gate_network = nn.Sequential(
+                    nn.Linear(hidden_dim * 2, hidden_dim),
+                    nn.Sigmoid()
+                )
+                self.fusion_layer = nn.Identity()
+            else:
+                print("fusion mode: unknown")
+                raise ValueError(f"Unsupported fusion mode: {self.fusion_mode}")
         elif self.use_channel_memory or self.use_spatial_memory:
-            fusion_input_dim = hidden_dim
-        
-        self.fusion_layer = nn.Linear(fusion_input_dim, hidden_dim) if fusion_input_dim > hidden_dim else nn.Identity()
+            # Single memory type - no fusion needed
+            self.fusion_layer = nn.Identity()
+        else:
+            # No memory - no fusion needed
+            self.fusion_layer = nn.Identity()
         
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
@@ -369,11 +398,59 @@ class UniADMemory(nn.Module):
             memory_features = encoded_tokens
         elif len(memory_features_list) == 1:
             # Single memory type
-            memory_features = self.fusion_layer(memory_features_list[0])
+            memory_features = memory_features_list[0]
         else:
-            # Multiple memory types - concatenate and fuse
-            combined_features = torch.cat(memory_features_list, dim=-1)  # (H x W) x B x (N*C)
-            memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
+            # Multiple memory types - fuse based on fusion_mode
+            channel_features = memory_features_list[0]
+            spatial_features = memory_features_list[1]
+            
+            if self.fusion_mode == 'concat':
+                # Concatenation-based fusion (original method)
+                combined_features = torch.cat([channel_features, spatial_features], dim=-1)  # (H x W) x B x (2*C)
+                memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
+            
+            elif self.fusion_mode == 'add':
+                # Addition-based fusion
+                memory_features = channel_features + spatial_features
+            
+            elif self.fusion_mode == 'multiply':
+                # Multiplication-based fusion
+                memory_features = channel_features * spatial_features
+            
+            elif self.fusion_mode == 'attention':
+                # Attention-based fusion
+                N, B, C = channel_features.shape
+                
+                # Reshape for attention computation
+                queries = self.query_proj_fusion(spatial_features.view(N*B, C))  # [N*B, C]
+                keys = self.key_proj_fusion(channel_features.view(N*B, C))      # [N*B, C]
+                values = self.value_proj_fusion(channel_features.view(N*B, C))  # [N*B, C]
+                
+                # Compute attention scores
+                attention = torch.mm(queries, keys.transpose(0, 1))  # [N*B, N*B]
+                attention = attention.view(N*B, N*B)
+                
+                # Apply scaling and softmax
+                attention = F.softmax(attention * self.fusion_scale, dim=1)
+                
+                # Apply attention to values
+                attended_values = torch.mm(attention, values)  # [N*B, C]
+                
+                # Reshape back to original format
+                memory_features = attended_values.view(N, B, C)
+            
+            elif self.fusion_mode == 'gate':
+                # Gate-based fusion
+                N, B, C = channel_features.shape
+                
+                # Concatenate for gate computation
+                concat_features = torch.cat([channel_features, spatial_features], dim=-1)  # [N, B, 2C]
+                
+                # Compute gate values (sigmoid between 0 and 1)
+                gates = self.gate_network(concat_features.view(N*B, 2*C)).view(N, B, C)  # [N, B, C]
+                
+                # Apply gating mechanism
+                memory_features = gates * channel_features + (1 - gates) * spatial_features
         
         # Decode features
         decoded_tokens = self.decoder(
