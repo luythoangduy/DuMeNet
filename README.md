@@ -87,6 +87,9 @@ These results surpass previous methods including UniAD (87.2), MKD (72.1), PANDA
 - numpy
 - einops
 - easydict
+- pyyaml
+- tensorboardX
+- tabulate
 
 ## Usage
 
