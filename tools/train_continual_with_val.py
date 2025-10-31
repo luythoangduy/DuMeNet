@@ -299,7 +299,7 @@ def main():
     parser.add_argument('--config', type=str, default='tools/config.yaml',
                         help='Path to config file')
     parser.add_argument('--tasks', type=str, nargs='+',
-                        default=['bottle', 'cable', 'capsule', 'hazelnut', 'metal_nut'],
+                        default=['hazelnut', 'bottle', 'cable','capsule', 'metal_nut', 'pill', 'toothbrush', 'transistor', 'zipper', 'screw'],
                         help='List of tasks/classes to train sequentially')
     parser.add_argument('--resume_from_task', type=int, default=0,
                         help='Resume from specific task (0-indexed)')
