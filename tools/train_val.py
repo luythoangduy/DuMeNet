@@ -31,7 +31,7 @@ from utils.misc_helper import (
 )
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
-import copy
+
 
 class_name_list = [
     "bottle",
@@ -176,55 +176,11 @@ def main():
 
     # parameters needed to be updated
     # Handle both DDP and DataParallel/single GPU cases
-    # parameters needed to be updated
     model_for_params = model.module if (use_ddp or isinstance(model, DataParallel)) else model
+    parameters = [
+        {"params": getattr(model_for_params, layer).parameters()} for layer in active_layers
+    ]
 
-    # Lấy learning rates từ config
-    base_lr = config.trainer.optimizer.kwargs.lr
-    cbam_lr = config.trainer.optimizer.kwargs.get('cbam_lr', base_lr * 0.1)  # Mặc định là 0.1 * base_lr nếu không có
-
-    # Tạo danh sách tham số với LR khác nhau
-    parameters = []
-
-    for layer in active_layers:
-        layer_module = getattr(model_for_params, layer)
-        
-        # Xử lý đặc biệt cho CBAM trong MFCN
-        if layer == 'neck' and hasattr(layer_module, 'cbam_modules'):
-            # Tách các tham số thông thường và tham số CBAM
-            regular_params = []
-            cbam_params = []
-            
-            for name, param in layer_module.named_parameters():
-                if 'cbam_modules' in name:
-                    cbam_params.append(param)
-                else:
-                    regular_params.append(param)
-            
-            # Thêm tham số thông thường với LR gốc
-            if regular_params:
-                parameters.append({"params": regular_params})
-            
-            # Thêm tham số CBAM với LR từ config
-            if cbam_params:
-                parameters.append({
-                    "params": cbam_params,
-                    "lr": cbam_lr
-                })
-                
-                if rank == 0 and logger:
-                    logger.info(f"CBAM learning rate: {cbam_lr} (Regular LR: {base_lr})")
-        else:
-            # Xử lý thông thường cho các lớp khác
-            parameters.append({"params": layer_module.parameters()})
-
-    # Xóa cbam_lr từ kwargs trước khi truyền vào optimizer
-    optimizer_kwargs = copy.deepcopy(config.trainer.optimizer.kwargs)
-    if 'cbam_lr' in optimizer_kwargs:
-        del optimizer_kwargs['cbam_lr']
-        
-    # Tạo optimizer với kwargs đã lọc
-    config.trainer.optimizer.kwargs = optimizer_kwargs
     optimizer = get_optimizer(parameters, config.trainer.optimizer)
     lr_scheduler = get_scheduler(optimizer, config.trainer.lr_scheduler)
 

@@ -77,11 +77,11 @@ net:
     feature_size:
     - 14
     - 14
-    fusion_mode: add
+    fusion_mode: concat
     hidden_dim: 256
     initializer:
       method: xavier_uniform
-    memory_mode: both
+    memory_mode: spatial
     neighbor_mask:
       mask:
       - false
@@ -139,10 +139,12 @@ wandb:
   login: true
   mode: online
   name: toothbrush_zscore_sigmol_500_256_256_0mse_1spatial_mse_3non_beta2
-  notes: UniAD on MVTec-AD dataset
+  notes: UniAD with Spatial Region Focal Loss (pure) on MVTec-AD dataset - Local Training
   project: UniAD-MVTec-single
   resume: allow
   run_id: null
   tags:
   - mvtec
   - anomaly-detection
+  - spatial-focal-loss
+  - local
