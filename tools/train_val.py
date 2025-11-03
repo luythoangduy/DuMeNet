@@ -176,33 +176,11 @@ def main():
 
     # parameters needed to be updated
     # Handle both DDP and DataParallel/single GPU cases
-    # parameters needed to be updated
     model_for_params = model.module if (use_ddp or isinstance(model, DataParallel)) else model
+    parameters = [
+        {"params": getattr(model_for_params, layer).parameters()} for layer in active_layers
+    ]
 
-    # Lấy thông số từ config
-    base_lr = config.trainer.optimizer.kwargs.get("lr", 0.0001)
-    backbone_lr_ratio = config.trainer.optimizer.kwargs.get("backbone_lr_ratio", 0.1)
-    base_weight_decay = config.trainer.optimizer.kwargs.get("weight_decay", 0.0001)
-    backbone_weight_decay = config.trainer.optimizer.kwargs.get("backbone_weight_decay", 0.0005)
-
-    # Tạo các nhóm tham số với learning rates và weight decay khác nhau
-    parameters = []
-    for layer in active_layers:
-        if layer == "backbone":
-            parameters.append({
-                "params": getattr(model_for_params, layer).parameters(),
-                "lr": base_lr * backbone_lr_ratio,  # Learning rate thấp hơn cho backbone
-                "weight_decay": backbone_weight_decay  # Weight decay cao hơn cho backbone
-            })
-            if rank == 0:
-                logger.info(f"Backbone parameters: lr={base_lr * backbone_lr_ratio}, weight_decay={backbone_weight_decay}")
-        else:
-            parameters.append({
-                "params": getattr(model_for_params, layer).parameters(),
-                "name": layer  # Thêm tên layer để dễ phân biệt khi debug
-            })
-
-    # Sử dụng get_optimizer với các parameters đã được cấu hình
     optimizer = get_optimizer(parameters, config.trainer.optimizer)
     lr_scheduler = get_scheduler(optimizer, config.trainer.lr_scheduler)
 

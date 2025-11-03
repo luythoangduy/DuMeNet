@@ -36,54 +36,7 @@ VALID_MODELS = (
     # Support the construction of 'efficientnet-l2' without pretrained weights
     "efficientnet-l2",
 )
-# CBAM module
-class ChannelAttention(nn.Module):
-    def __init__(self, in_planes, ratio=16):
-        super(ChannelAttention, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
 
-        self.fc1 = nn.Conv2d(in_planes, in_planes // ratio, 1, bias=False)
-        self.relu1 = nn.ReLU()
-        self.fc2 = nn.Conv2d(in_planes // ratio, in_planes, 1, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg_out = self.fc2(self.relu1(self.fc1(self.avg_pool(x))))
-        max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
-        out = avg_out + max_out
-        return self.sigmoid(out)
-
-
-class SpatialAttention(nn.Module):
-    def __init__(self, kernel_size=7):
-        super(SpatialAttention, self).__init__()
-
-        assert kernel_size in (3, 7), 'kernel size must be 3 or 7'
-        padding = 3 if kernel_size == 7 else 1
-
-        self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        x = torch.cat([avg_out, max_out], dim=1)
-        x = self.conv1(x)
-        return self.sigmoid(x)
-
-
-class CBAM(nn.Module):
-    def __init__(self, in_planes, ratio=16, kernel_size=7):
-        super(CBAM, self).__init__()
-        self.ca = ChannelAttention(in_planes, ratio)
-        self.sa = SpatialAttention(kernel_size)
-
-    def forward(self, x):
-        x = self.ca(x) * x
-        x = self.sa(x) * x
-        return x
-#End of CBAM module
 
 class MBConvBlock(nn.Module):
     """Mobile Inverted Residual Bottleneck Block.
@@ -99,7 +52,7 @@ class MBConvBlock(nn.Module):
         [3] https://arxiv.org/abs/1905.02244 (MobileNet v3)
     """
 
-    def __init__(self, block_args, global_params, image_size=None, use_cbam=True):
+    def __init__(self, block_args, global_params, image_size=None):
         super().__init__()
         self._block_args = block_args
         self._bn_mom = (
@@ -112,7 +65,7 @@ class MBConvBlock(nn.Module):
         self.id_skip = (
             block_args.id_skip
         )  # whether to use skip connection and drop connect
-        self.use_cbam = use_cbam # whether to use CBAM attention
+
         # Expansion phase (Inverted Bottleneck)
         inp = self._block_args.input_filters  # number of input channels
         oup = (
@@ -168,10 +121,6 @@ class MBConvBlock(nn.Module):
             num_features=final_oup, momentum=self._bn_mom, eps=self._bn_eps
         )
         self._swish = MemoryEfficientSwish()
-        # CBAM attention module
-        if self.use_cbam:
-            print("use CBAM in backbone")
-            self.cbam = CBAM(block_args.output_filters)
 
     def forward(self, inputs, drop_connect_rate=None):
         """MBConvBlock's forward function.
@@ -221,8 +170,6 @@ class MBConvBlock(nn.Module):
             if drop_connect_rate:
                 x = drop_connect(x, p=drop_connect_rate, training=self.training)
             x = x + inputs  # skip connection
-        if self.use_cbam:
-            x = self.cbam(x)
         return x
 
     def set_swish(self, memory_efficient=True):
@@ -254,7 +201,7 @@ class EfficientNet(nn.Module):
         >>> outputs = model(inputs)
     """
 
-    def __init__(self, outblocks, outstrides, blocks_args=None, global_params=None, use_cbam=True):
+    def __init__(self, outblocks, outstrides, blocks_args=None, global_params=None):
         super().__init__()
         assert isinstance(blocks_args, list), "blocks_args should be a list"
         assert len(blocks_args) > 0, "block args must be greater than 0"
@@ -262,7 +209,6 @@ class EfficientNet(nn.Module):
         self._blocks_args = blocks_args
         self.outblocks = outblocks
         self.outstrides = outstrides
-        self.use_cbam = use_cbam
 
         # Batch norm parameters
         bn_mom = 1 - self._global_params.batch_norm_momentum
@@ -470,7 +416,7 @@ class EfficientNet(nn.Module):
 
     @classmethod
     def from_name(
-        cls, model_name, outblocks, outstrides, in_channels=3, use_cbam=True, **override_params
+        cls, model_name, outblocks, outstrides, in_channels=3, **override_params
     ):
         """Create an efficientnet model according to name.
 
@@ -491,7 +437,7 @@ class EfficientNet(nn.Module):
         """
         cls._check_model_name_is_valid(model_name)
         blocks_args, global_params = get_model_params(model_name, override_params)
-        model = cls(outblocks, outstrides, blocks_args, global_params, use_cbam=use_cbam)
+        model = cls(outblocks, outstrides, blocks_args, global_params)
         model._change_in_channels(in_channels)
         return model
 
@@ -505,7 +451,6 @@ class EfficientNet(nn.Module):
         advprop=False,
         in_channels=3,
         num_classes=1000,
-        use_cbam=True,
         **override_params
     ):
         """Create an efficientnet model according to name.
@@ -539,7 +484,6 @@ class EfficientNet(nn.Module):
             outblocks=outblocks,
             outstrides=outstrides,
             num_classes=num_classes,
-            use_cbam=use_cbam,
             **override_params
         )
         load_pretrained_weights(
