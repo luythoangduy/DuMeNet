@@ -1,15 +1,8 @@
 criterion:
 - kwargs:
-    beta: 2
-    epsilon: 0.001
-    loss_type: mse
-    mse_weight: 0.4
-    overlap: false
-    region_size: 3
-    spatial_focal_weight: 0.6
     weight: 1.0
-  name: CombinedMSESpatialFocalLoss
-  type: CombinedMSESpatialFocalLoss
+  name: FeatureMSELoss
+  type: FeatureMSELoss
 dataset:
   batch_size: 8
   image_reader:
@@ -54,10 +47,9 @@ evaluator:
     max_score: null
     min_score: null
     save_dir: ./tools/vis_compound
-frozen_layers:
-- backbone
+frozen_layers: []
 net:
-- frozen: true
+- frozen: false
   kwargs:
     outlayers:
     - 1
@@ -84,9 +76,11 @@ net:
     feature_size:
     - 14
     - 14
+    fusion_mode: add
     hidden_dim: 256
     initializer:
       method: xavier_uniform
+    memory_mode: both
     neighbor_mask:
       mask:
       - false
@@ -124,6 +118,8 @@ trainer:
   max_epoch: 500
   optimizer:
     kwargs:
+      backbone_lr_ratio: 0.1
+      backbone_weight_decay: 0.0005
       betas:
       - 0.9
       - 0.999
@@ -143,13 +139,11 @@ wandb:
   job_type: train
   login: true
   mode: online
-  name: bottle_500_256_256_0.4mse_0.6spatial_mse_3non_beta2
-  notes: UniAD with Spatial Region Focal Loss (pure) on MVTec-AD dataset - Local Training
+  name: bottle_zscore_sigmol_500_256_256_0mse_1spatial_mse_3non_beta2
+  notes: UniAD on MVTec-AD dataset
   project: UniAD-MVTec-single
   resume: allow
   run_id: null
   tags:
   - mvtec
   - anomaly-detection
-  - spatial-focal-loss
-  - local

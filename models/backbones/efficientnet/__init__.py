@@ -24,76 +24,77 @@ __all__ = [
 ]
 
 
-def efficientnet_b0(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b0(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b0", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b0", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b1(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b1(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b1", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b1", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b2(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b2(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b2", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b2", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b3(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b3(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b3", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b3", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b4(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b4(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b4", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b4", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b5(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b5(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b5", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b5", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b6(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b6(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b6", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b6", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b7(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b7(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b7", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b7", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_b8(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_b8(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-b8", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-b8", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def efficientnet_l2(pretrained, outblocks, outstrides, pretrained_model=""):
+def efficientnet_l2(pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     return build_efficient(
-        "efficientnet-l2", pretrained, outblocks, outstrides, pretrained_model
+        "efficientnet-l2", pretrained, outblocks, outstrides, pretrained_model, use_cbam
     )
 
 
-def build_efficient(model_name, pretrained, outblocks, outstrides, pretrained_model=""):
+def build_efficient(model_name, pretrained, outblocks, outstrides, pretrained_model="", use_cbam=True):
     if pretrained:
         model = EfficientNet.from_pretrained(
             model_name,
             outblocks=outblocks,
             outstrides=outstrides,
             pretrained_model=pretrained_model,
+            use_cbam=use_cbam,
         )
     else:
         model = EfficientNet.from_name(
-            model_name, outblocks=outblocks, outstrides=outstrides
+            model_name, outblocks=outblocks, outstrides=outstrides, use_cbam=use_cbam
         )
     return model

@@ -104,10 +104,10 @@ def main():
     
     # Class list
     class_name_list = [
-        # "bottle", "cable", "capsule", "hazelnut", "metal_nut",
+        "bottle", 
+        # "cable", "capsule", "hazelnut", "metal_nut",
         # "pill", "screw", "toothbrush", "transistor", "zipper",
         # "carpet", "grid", "leather", "tile", "wood"
-        'toothbrush'
     ]
     
     print(f"Training {len(class_name_list)} classes sequentially")
