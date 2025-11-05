@@ -427,13 +427,17 @@ def validate(val_loader, model, single_gpu_mode, wandb_run=None, epoch=None):
     # all threads write to config.evaluator.eval_dir, it must be made before every thread begin to write
     if not single_gpu_mode:
         dist.barrier()
-
+    sum_time = 0.0
     with torch.no_grad():
         for i, input in enumerate(val_loader):
             # forward
+            start_inference = time.time()
             outputs = model(input)
+            end_inference = time.time()
+            inference_time_per_image = (end_inference - start_inference)
+            print(f"Inference time per image {i}: {inference_time_per_image:.4f} seconds")
             dump(config.evaluator.eval_dir, outputs)
-
+            sum_time += inference_time_per_image
             # record loss
             loss = 0
             for name, criterion_loss in criterion.items():
@@ -452,7 +456,9 @@ def validate(val_loader, model, single_gpu_mode, wandb_run=None, epoch=None):
                         i + 1, len(val_loader), batch_time=batch_time
                     )
                 )
-
+        avg_inference_time = sum_time / len(val_loader.dataset)
+        fps = 1.0 / avg_inference_time
+        print(f"Average inference time per image: {avg_inference_time:.4f} seconds, FPS: {fps:.2f}")
     # gather final results
     if single_gpu_mode:
         final_loss = losses.avg

@@ -46,7 +46,7 @@ dataset:
     - 0.229
     - 0.224
     - 0.225
-  batch_size: 8
+  batch_size: 1
   workers: 4
 
 criterion:
@@ -58,7 +58,7 @@ criterion:
 trainer:
   max_epoch: 500
   clip_max_norm: 0.1
-  val_freq_epoch: 10
+  val_freq_epoch: 1
   print_freq_step: 100
   tb_freq_step: 1
   lr_scheduler:
@@ -109,7 +109,7 @@ net:
     kwargs:
       pretrained: true
       outlayers:
-        - 1
+        # - 1
         - 2
         - 3
         - 4
@@ -136,7 +136,7 @@ net:
       activation: relu
       normalize_before: false
       memory_mode: both # Options: 'channel', 'spatial', 'both', 'none'
-      fusion_mode: add # Options: 'concat', 'add', 'multiply', 'attention', 'gate'
+      fusion_mode: concat # Options: 'concat', 'add', 'multiply', 'attention', 'gate'
       channel_memory_size: 256
       spatial_memory_size: 256
       feature_jitter:
