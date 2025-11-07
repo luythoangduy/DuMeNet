@@ -305,18 +305,19 @@ class UniADMemory(nn.Module):
                 print("fusion mode: add/multiply")
                 # No parameters needed for these operations
                 self.fusion_layer = nn.Identity()
-            elif self.fusion_mode == 'attention':
-                print("fusion mode: attention")
-                # Attention-based fusion
-                self.query_proj_fusion = nn.Linear(hidden_dim, hidden_dim, bias=False)
-                self.key_proj_fusion = nn.Linear(hidden_dim, hidden_dim, bias=False)
-                self.value_proj_fusion = nn.Linear(hidden_dim, hidden_dim, bias=False)
-                self.fusion_scale = 1.0 / math.sqrt(hidden_dim)
+            elif self.fusion_mode == 'add_linear':
+                print("fusion mode: add + linear")
+                self.fusion_layer = nn.Linear(hidden_dim, hidden_dim)
+
+            elif self.fusion_mode == 'weighted_sum':
+                print("fusion mode: weighted sum (learnable alpha)")
+                # Learnable fusion weight α
+                self.alpha = nn.Parameter(torch.tensor(0.5))
                 self.fusion_layer = nn.Identity()
             elif self.fusion_mode == 'gate':
                 print("fusion mode: gate")
                 # Gated fusion mechanism
-                self.gate_network = nn.Sequential(
+                self.gate_layer = nn.Sequential(
                     nn.Linear(hidden_dim * 2, hidden_dim),
                     nn.Sigmoid()
                 )
@@ -415,40 +416,19 @@ class UniADMemory(nn.Module):
                 # Multiplication-based fusion
                 memory_features = channel_features * spatial_features
             
-            elif self.fusion_mode == 'attention':
-                # Attention-based fusion
-                N, B, C = channel_features.shape
-                
-                # Reshape for attention computation
-                queries = self.query_proj_fusion(spatial_features.view(N*B, C))  # [N*B, C]
-                keys = self.key_proj_fusion(channel_features.view(N*B, C))      # [N*B, C]
-                values = self.value_proj_fusion(channel_features.view(N*B, C))  # [N*B, C]
-                
-                # Compute attention scores
-                attention = torch.mm(queries, keys.transpose(0, 1))  # [N*B, N*B]
-                attention = attention.view(N*B, N*B)
-                
-                # Apply scaling and softmax
-                attention = F.softmax(attention * self.fusion_scale, dim=1)
-                
-                # Apply attention to values
-                attended_values = torch.mm(attention, values)  # [N*B, C]
-                
-                # Reshape back to original format
-                memory_features = attended_values.view(N, B, C)
-            
+            elif self.fusion_mode == 'add_linear':
+                # Add rồi qua Linear để học mapping mới
+                added_features = channel_features + spatial_features
+                memory_features = self.fusion_layer(added_features)
+
+            elif self.fusion_mode == 'weighted_sum':
+                # Weighted sum với hệ số alpha có thể học
+                memory_features = self.alpha * channel_features + (1 - self.alpha) * spatial_features
+
             elif self.fusion_mode == 'gate':
-                # Gate-based fusion
-                N, B, C = channel_features.shape
-                
-                # Concatenate for gate computation
-                concat_features = torch.cat([channel_features, spatial_features], dim=-1)  # [N, B, 2C]
-                
-                # Compute gate values (sigmoid between 0 and 1)
-                gates = self.gate_network(concat_features.view(N*B, 2*C)).view(N, B, C)  # [N, B, C]
-                
-                # Apply gating mechanism
-                memory_features = gates * channel_features + (1 - gates) * spatial_features
+                combined = torch.cat([channel_features, spatial_features], dim=-1)  # [B, N, 2C]
+                gate = self.gate_layer(combined)  # [B, N, C]
+                memory_features = gate * channel_features + (1 - gate) * spatial_features
         
         # Decode features
         decoded_tokens = self.decoder(
