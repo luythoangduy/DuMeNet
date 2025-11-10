@@ -22,7 +22,7 @@ def train_single_class(cls_name, base_config):
     try:
         # Create config for this class
         cls_config = copy.deepcopy(base_config)
-        cls_config['wandb']['name'] = f"{cls_name}_nosigmol_500_256_256_local_nojitter"
+        cls_config['wandb']['name'] = f"{cls_name}_nosigmol_500_256_256_local_meanstdnorm_sigmoid"
         cls_config['wandb']['project'] = "UniAD-MVTec-single"
         
         # Save temporary config file
@@ -104,8 +104,8 @@ def main():
     
     # Class list
     class_name_list = [
-        "toothbrush",
-        # "bottle", 
+        # "toothbrush",
+        "bottle", 
         # "cable", "capsule", "hazelnut", "metal_nut",
         # "pill", "screw", "toothbrush", "transistor", "zipper",
         # "carpet", "grid", "leather", "tile", "wood"

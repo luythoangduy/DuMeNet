@@ -227,7 +227,7 @@ class UniADMemory(nn.Module):
         
         # Memory modules configuration
         self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
-        self.fusion_mode = kwargs.get('fusion_mode', 'concat')  # Default: 'concat', Options: 'add', 'multiply', 'attention', 'gate'
+        self.fusion_mode = kwargs.get('fusion_mode', 'concat')  # Default: 'concat', Options: 'add', 'gate', 'weighted_sum', 'add_linear', 'multiply'
         self.channel_memory_size = kwargs.get('channel_memory_size', 256)
         self.spatial_memory_size = kwargs.get('spatial_memory_size', 256)
         
@@ -366,7 +366,14 @@ class UniADMemory(nn.Module):
             
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        # x_min, x_max = feature_tokens.min(), feature_tokens.max()
+        # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
+        # x_min, x_max = feature_tokens.min(), feature_tokens.max()
+        # feature_tokens = 2 * (feature_tokens - x_min) / (x_max - x_min + 1e-6) - 1
+        # mean = feature_tokens.mean()
+        # std = feature_tokens.std()
+        # feature_tokens = (feature_tokens - mean) / (std + 1e-6)
         # Get positional embeddings
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
         
@@ -374,7 +381,7 @@ class UniADMemory(nn.Module):
         encoded_tokens = self.encoder(
             feature_tokens, pos=pos_embed
         )  # (H x W) x B x C
-        
+        # print('encoded_tokens: ', encoded_tokens.shape)
         # Memory retrieval based on memory mode
         memory_features_list = []
         channel_result = None
@@ -439,7 +446,13 @@ class UniADMemory(nn.Module):
         
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
-        # feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
+        feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
+        # feature_rec_tokens = F.layer_norm(feature_rec_tokens, feature_rec_tokens.shape[-1:])
+        # x_min, x_max = feature_rec_tokens.min(), feature_rec_tokens.max()
+        # feature_rec_tokens = 2 * (feature_rec_tokens - x_min) / (x_max - x_min + 1e-6) - 1
+        # mean = feature_rec_tokens.mean()
+        # std = feature_rec_tokens.std()
+        # feature_rec_tokens = (feature_rec_tokens - mean) / (std + 1e-6)
         # Reshape back to spatial representation
         feature_rec = rearrange(
             feature_rec_tokens, "(h w) b c -> b c h w", h=self.feature_size[0]
@@ -459,7 +472,13 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        # feature_align = torch.sigmoid(feature_align) 
+        feature_align = torch.sigmoid(feature_align) 
+        # feature_align = F.layer_norm(feature_align, feature_align.shape[1:])
+        # x_min, x_max = feature_align.min(), feature_align.max()
+        # feature_align = 2 * (feature_align - x_min) / (x_max - x_min + 1e-6) - 1
+        # mean = feature_align.mean()
+        # std = feature_align.std()
+        # feature_align = (feature_align - mean) / (std + 1e-6)
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
         )  # B x 1 x H x W
