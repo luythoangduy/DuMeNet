@@ -216,6 +216,7 @@ class UniADMemory(nn.Module):
         self.feature_size = feature_size
         self.num_queries = feature_size[0] * feature_size[1]
         self.feature_jitter = feature_jitter
+        self.feature_masking = kwargs.get('feature_masking', None)  # Dict với 'ratio' và 'prob'
         self.pos_embed = build_position_embedding(
             pos_embed_type, feature_size, hidden_dim
         )
@@ -351,6 +352,29 @@ class UniADMemory(nn.Module):
             jitter = jitter * feature_norms * scale
             feature_tokens = feature_tokens + jitter
         return feature_tokens
+    def add_random_mask(self, feature_tokens, mask_ratio, prob):
+        """
+        Randomly mask a portion of feature tokens
+        Args:
+            feature_tokens: (H x W) x B x C
+            mask_ratio: float, ratio of tokens to mask (0.0 to 1.0)
+            prob: float, probability of applying masking
+        Returns:
+            masked feature_tokens
+        """
+        if random.uniform(0, 1) <= prob:
+            num_tokens, batch_size, dim_channel = feature_tokens.shape
+            
+            # Create random mask for each sample in batch
+            for b in range(batch_size):
+                # Randomly select tokens to mask
+                num_masked = int(num_tokens * mask_ratio)
+                mask_indices = torch.randperm(num_tokens)[:num_masked]
+                
+                # Set masked tokens to zero
+                feature_tokens[mask_indices, b, :] = 0.0
+                
+        return feature_tokens
 
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
@@ -359,11 +383,19 @@ class UniADMemory(nn.Module):
         )  # (H x W) x B x C
         
         # Add jitter during training if enabled
-        if self.training and self.feature_jitter:
-            feature_tokens = self.add_jitter(
-                feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
+        # if self.training and self.feature_jitter:
+        #     feature_tokens = self.add_jitter(
+        #         feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
+        #     )
+        # Add random masking during training if enabled
+        if self.training and self.feature_masking:
+            # print('apply feature masking', self.feature_masking.get('ratio', 0.15), self.feature_masking.get('prob', 0.5))
+            feature_tokens = self.add_random_mask(
+                feature_tokens, 
+                self.feature_masking.get('ratio', 0.15),  # Default 15% masking
+                self.feature_masking.get('prob', 0.5)     # Default 50% probability
             )
-            
+
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
         feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])

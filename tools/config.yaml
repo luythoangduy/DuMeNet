@@ -146,6 +146,9 @@ net:
       feature_jitter:
         scale: 20.0
         prob: 1.0
+      feature_masking:
+        ratio: 0.15 # Mask 15% tokens
+        prob: 0.5 # Apply masking with 50% probability
       neighbor_mask:
         neighbor_size:
           - 7
