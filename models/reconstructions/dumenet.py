@@ -353,21 +353,10 @@ class UniADMemory(nn.Module):
             feature_tokens = feature_tokens + jitter
         return feature_tokens
     def add_random_mask(self, feature_tokens, mask_ratio, prob):
-        """
-        Randomly mask a portion of feature tokens
-        Args:
-            feature_tokens: (H x W) x B x C
-            mask_ratio: float, ratio of tokens to mask (0.0 to 1.0)
-            prob: float, probability of applying masking
-        Returns:
-            masked feature_tokens
-        """
-        if random.uniform(0, 1) <= prob:
-            num_tokens, batch_size, dim_channel = feature_tokens.shape
-            
-            # Create random mask for each sample in batch
-            for b in range(batch_size):
-                # Randomly select tokens to mask
+        num_tokens, batch_size, dim_channel = feature_tokens.shape
+        
+        for b in range(batch_size):
+            if random.uniform(0, 1) <= prob:  # ← Check CHO TỪNG sample
                 num_masked = int(num_tokens * mask_ratio)
                 mask_indices = torch.randperm(num_tokens)[:num_masked]
                 
