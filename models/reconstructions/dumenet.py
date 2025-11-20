@@ -377,17 +377,17 @@ class UniADMemory(nn.Module):
         #         feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
         #     )
         # Add random masking during training if enabled
-        if self.training and self.feature_masking:
-            # print('apply feature masking', self.feature_masking.get('ratio', 0.15), self.feature_masking.get('prob', 0.5))
-            feature_tokens = self.add_random_mask(
-                feature_tokens, 
-                self.feature_masking.get('ratio', 0.15),  # Default 15% masking
-                self.feature_masking.get('prob', 0.5)     # Default 50% probability
-            )
+        # if self.training and self.feature_masking:
+        #     # print('apply feature masking', self.feature_masking.get('ratio', 0.15), self.feature_masking.get('prob', 0.5))
+        #     feature_tokens = self.add_random_mask(
+        #         feature_tokens, 
+        #         self.feature_masking.get('ratio', 0.15),  # Default 15% masking
+        #         self.feature_masking.get('prob', 0.5)     # Default 50% probability
+        #     )
 
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
         # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
@@ -457,7 +457,12 @@ class UniADMemory(nn.Module):
                 combined = torch.cat([channel_features, spatial_features], dim=-1)  # [B, N, 2C]
                 gate = self.gate_layer(combined)  # [B, N, C]
                 memory_features = gate * channel_features + (1 - gate) * spatial_features
-        
+
+        # Add jitter AFTER memory retrieval/fusion if enabled
+        if self.training and self.feature_jitter:
+            memory_features = self.add_jitter(
+                memory_features, self.feature_jitter.scale, self.feature_jitter.prob
+            )
         # Decode features
         decoded_tokens = self.decoder(
             memory_features, 
@@ -467,7 +472,7 @@ class UniADMemory(nn.Module):
         
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
-        feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
+        # feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
         # feature_rec_tokens = F.layer_norm(feature_rec_tokens, feature_rec_tokens.shape[-1:])
         # x_min, x_max = feature_rec_tokens.min(), feature_rec_tokens.max()
         # feature_rec_tokens = 2 * (feature_rec_tokens - x_min) / (x_max - x_min + 1e-6) - 1
@@ -493,7 +498,7 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        feature_align = torch.sigmoid(feature_align) 
+        # feature_align = torch.sigmoid(feature_align) 
         # feature_align = F.layer_norm(feature_align, feature_align.shape[1:])
         # x_min, x_max = feature_align.min(), feature_align.max()
         # feature_align = 2 * (feature_align - x_min) / (x_max - x_min + 1e-6) - 1
@@ -687,7 +692,43 @@ class TransformerEncoderLayer(nn.Module):
             return self.forward_pre(src, src_mask, src_key_padding_mask, pos)
         return self.forward_post(src, src_mask, src_key_padding_mask, pos)
 
-
+class EfficientMultiheadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.0, **kwargs):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scaling = self.head_dim**-0.5
+        self.qkv_proj = nn.Linear(embed_dim, embed_dim * 3, bias=False)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        # Placeholder for Linear/Efficient Attention logic (ví dụ: Softmax cho Q, K)
+        # Thực tế, bạn sẽ thay thế bằng logic Linear Attention cụ thể của mình
+        
+    def forward(self, query, key, value, attn_mask=None, key_padding_mask=None):
+        T, B, C = query.shape # Token length, Batch size, Channels
+        
+        # 1. Project QKV
+        qkv = self.qkv_proj(query) # T x B x 3C
+        qkv = qkv.reshape(T, B, 3, self.num_heads, self.head_dim).permute(2, 1, 3, 0, 4) # 3 x B x H x T x D_h
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        
+        # 2. Efficient Attention Core (ví dụ: Kernel-based/Softmax-on-Q-K)
+        # Ví dụ: Softmax trên Q và K (như trong một số biến thể Linear Attention)
+        q = F.softmax(q * self.scaling, dim=-1) # B x H x T x D_h
+        k = F.softmax(k * self.scaling, dim=-2) # B x H x T x D_h (Softmax trên chiều T)
+        
+        # Linear Attention: Q * (K^T * V)
+        kv = torch.einsum("bhsd,bhse->bhde", k, v) # B x H x D_h x D_h
+        attn_output = torch.einsum("bhsd,bhde->bhse", q, kv) # B x H x T x D_h
+        
+        # 3. Reshape và Output Projection
+        attn_output = attn_output.permute(2, 0, 1, 3).reshape(T, B, C) # T x B x C
+        attn_output = self.dropout(self.out_proj(attn_output))
+        
+        # Trả về output và None (như nn.MultiheadAttention)
+        return attn_output, None
+    
 class TransformerMemoryDecoderLayer(nn.Module):
     def __init__(
         self,
@@ -700,8 +741,10 @@ class TransformerMemoryDecoderLayer(nn.Module):
     ):
         super().__init__()
         # Standard transformer decoder layer components
-        self.self_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        self.multihead_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        # self.self_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        # self.multihead_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        self.self_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        self.multihead_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
         
         # Feedforward network
         self.linear1 = nn.Linear(hidden_dim, dim_feedforward)
