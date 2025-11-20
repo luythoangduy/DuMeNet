@@ -351,7 +351,21 @@ def train_one_epoch(
         for name, criterion_loss in criterion.items():
             weight = criterion_loss.weight
             loss += weight * criterion_loss(outputs)
-        
+        if 'contrastive_loss' in outputs and outputs['contrastive_loss'] is not None:
+            # Lấy weight cho Contrastive Loss trong config
+            contrast_weight = config.get('contrastive_weight', 1.0)
+            contrast_loss_value = outputs['contrastive_loss']
+            
+            # Chỉ cộng vào loss nếu giá trị hợp lệ (không phải tensor rỗng hoặc NaN/Inf)
+            if torch.is_tensor(contrast_loss_value) and contrast_loss_value.numel() == 1 and torch.isfinite(contrast_loss_value):
+                loss += contrast_weight * contrast_loss_value
+                print(f"Added Contrastive Loss: {contrast_loss_value.item()} with weight {contrast_weight} = {contrast_weight * contrast_loss_value.item()}")
+                # Optional: Log the specific contrastive loss value
+                if wandb_run and rank == 0:
+                    wandb_run.log({
+                        "train/loss_contrastive": contrast_loss_value.item(),
+                        "step": curr_step + 1,
+                    })
         if single_gpu_mode:
             reduced_loss = loss.clone()
         else:

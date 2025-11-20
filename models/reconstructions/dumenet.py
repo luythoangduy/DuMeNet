@@ -13,6 +13,125 @@ from torch import Tensor, nn
 
 __all__ = ["UniADMemory"]
 
+log_sigmoid = F.logsigmoid
+
+
+def calculate_angle_loss(features1, features2, center: torch.Tensor = None, temp: float = 0.15, reduction: str = 'mean'):
+    # 1. Xử lý đầu vào
+    if center is not None:
+        features1 = features1 - center
+        features2 = features2 - center
+        
+    features1 = F.normalize(features1, dim=-1)
+    features2 = F.normalize(features2, dim=-1)
+    
+    B = features1.size(0)
+
+    # 2. TẠO PSEUDO-MASK BÊN TRONG: F1 (features1) là Normal (0), F2 (features2) là Anomaly (1)
+    
+    # Mask cho features1 (Normal)
+    mask_normal = torch.zeros(B, dtype=torch.long, device=features1.device)
+    # Mask cho features2 (Anomaly)
+    mask_anomaly = torch.ones(B, dtype=torch.long, device=features1.device)
+    
+    # 3. Ghép features và mask
+    features = torch.cat([features1, features2], dim=0)   # (2B, D) 
+    # SỬA LỖI Ở ĐÂY: Ghép mask [0,...,0, 1,...,1]
+    masks_ = torch.cat([mask_normal, mask_anomaly], dim=0) 
+    
+    # 4. Tách Nor/Ano features (Giữ nguyên logic gốc)
+    nor_features = features[masks_ == 0]  # (B, D) - Chính là features1
+    ano_features = features[masks_ == 1]  # (B, D) - Chính là features2
+    
+    # 5. Tính Positives (Giữ nguyên logic gốc)
+    pos_similarities = torch.exp(torch.sum(features1 * features2, dim=-1) / temp)
+    pos_similarities = torch.cat([pos_similarities, pos_similarities], dim=0)
+    
+    # Tách Positives dựa trên masks_
+    nor_pos_similarities = pos_similarities[masks_ == 0]
+    ano_pos_similarities = pos_similarities[masks_ == 1]
+    
+    # 6. Tính Negatives (Giữ nguyên logic gốc)
+    
+    # Tính mẫu số cho Normal features: Nor vs Ano
+    nor_neg_similarities = torch.tensor([0.0], device=features1.device)
+    if ano_features.shape[0] > 0:
+        nor_neg_similarities = torch.exp(torch.mm(nor_features, ano_features.t().contiguous()) / temp)
+
+    # Tính mẫu số cho Anomaly features: Ano vs Nor
+    ano_neg_similarities = torch.tensor([0.0], device=features1.device)
+    if nor_features.shape[0] > 0:
+        ano_neg_similarities = torch.exp(torch.mm(ano_features, nor_features.t().contiguous()) / temp)
+
+    # 7. Tính Contrastive Loss (Giữ nguyên logic gốc)
+    contrastive_losses_part1 = torch.tensor([0.0], device=features1.device)
+    # ... [Logic tính contrastive_losses_part1] ...
+    if nor_pos_similarities.shape[0] > 0 and nor_neg_similarities.shape[-1] > 0:
+        numerator = nor_pos_similarities
+        denominator = nor_pos_similarities + nor_neg_similarities.sum(dim=-1)
+        contrastive_losses_part1 = -torch.log(numerator / (denominator + 1e-8))
+
+    contrastive_losses_part2 = torch.tensor([0.0], device=features1.device)
+    # ... [Logic tính contrastive_losses_part2] ...
+    if ano_pos_similarities.shape[0] > 0 and ano_neg_similarities.shape[-1] > 0:
+        numerator = ano_pos_similarities
+        denominator = ano_pos_similarities + ano_neg_similarities.sum(dim=-1)
+        contrastive_losses_part2 = -torch.log(numerator / (denominator + 1e-8))
+        
+    contrastive_losses = torch.cat([contrastive_losses_part1, contrastive_losses_part2], dim=0)
+    
+    if reduction == 'mean':
+        loss = torch.mean(contrastive_losses)
+    elif reduction == 'sum':
+        loss = torch.sum(contrastive_losses)
+    else:
+        raise RuntimeError(f"The loss reduction '{reduction}' is not supported!")
+        
+    return loss
+
+
+def calculate_norm_loss(features):
+    """
+    Args:
+        features: shape (N, dim) - Áp dụng cho các features Normal (mem_global)
+    """
+    # 1. TẠO PSEUDO-MASK BÊN TRONG: Coi tất cả là Normal (0)
+    mask = torch.zeros(features.size(0), dtype=torch.long, device=features.device)
+    
+    A = features.norm(dim=1)
+    A = torch.sqrt(A + 1) - 1 # Chuyển đổi chuẩn
+    
+    # Do mask luôn là 0: Aa (Anomaly) rỗng, r_max/r_min dùng giá trị mặc định 0.4
+    r_max = 0.4
+    r_min = 0.99 * 0.4
+    
+    loss, loss_n, loss_a = 0, 0, 0
+    
+    # 2. Loss cho Normal features
+    # Khối if torch.sum(mask == 0) != 0: luôn đúng
+    An = A[mask == 0] # An = A (toàn bộ features)
+    An_larger = An[An > r_max]
+    An_lower = An[An < r_min]
+    
+    # Loss đẩy xuống (larger than r_max)
+    loss_larger = 0
+    if An_larger.shape[0] != 0:
+        weights = torch.exp(An_larger - r_max).detach()
+        loss_larger = torch.mean(-log_sigmoid(-(An_larger - r_max)) * weights)
+    
+    # Loss kéo lên (lower than r_min)
+    loss_lower = 0
+    if An_lower.shape[0] != 0:
+        weights = torch.exp(r_min - An_lower).detach()
+        loss_lower = torch.mean(-log_sigmoid(-(r_min - An_lower)) * weights)
+    
+    loss_n = loss_larger + loss_lower
+    loss += loss_n
+
+    # 3. Loss cho Anomaly features (Khối if torch.sum(mask == 1) != 0: luôn sai)
+    # Khối này sẽ tự động bị bỏ qua.
+    
+    return loss
 
 class ChannelMemoryModule(nn.Module):
     """
@@ -370,20 +489,6 @@ class UniADMemory(nn.Module):
         feature_tokens = rearrange(
             feature_align, "b c h w -> (h w) b c"
         )  # (H x W) x B x C
-        
-        # Add jitter during training if enabled
-        # if self.training and self.feature_jitter:
-        #     feature_tokens = self.add_jitter(
-        #         feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
-        #     )
-        # Add random masking during training if enabled
-        # if self.training and self.feature_masking:
-        #     # print('apply feature masking', self.feature_masking.get('ratio', 0.15), self.feature_masking.get('prob', 0.5))
-        #     feature_tokens = self.add_random_mask(
-        #         feature_tokens, 
-        #         self.feature_masking.get('ratio', 0.15),  # Default 15% masking
-        #         self.feature_masking.get('prob', 0.5)     # Default 50% probability
-        #     )
 
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
@@ -398,23 +503,18 @@ class UniADMemory(nn.Module):
         # Get positional embeddings
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
         
-        # Encode features using transformer encoder
-        encoded_tokens = self.encoder(
-            feature_tokens, pos=pos_embed
-        )  # (H x W) x B x C
-        # print('encoded_tokens: ', encoded_tokens.shape)
         # Memory retrieval based on memory mode
         memory_features_list = []
         channel_result = None
         spatial_result = None
         
         if self.use_channel_memory:
-            channel_result = self.channel_memory_module(encoded_tokens)
+            channel_result = self.channel_memory_module(feature_tokens)
             channel_retrieved = channel_result['output']  # (H x W) x B x C
             memory_features_list.append(channel_retrieved)
         
         if self.use_spatial_memory:
-            spatial_result = self.spatial_memory_module(encoded_tokens)
+            spatial_result = self.spatial_memory_module(feature_tokens)
             spatial_retrieved = spatial_result['output']  # C x B x H x W
             spatial_retrieved = torch.permute(spatial_retrieved, (2, 1, 0))  # (H x W) x B x C
             memory_features_list.append(spatial_retrieved)
@@ -422,7 +522,7 @@ class UniADMemory(nn.Module):
         # Fuse memory features based on available memories
         if len(memory_features_list) == 0:
             # No memory - use encoded tokens directly
-            memory_features = encoded_tokens
+            memory_features = feature_tokens
         elif len(memory_features_list) == 1:
             # Single memory type
             memory_features = memory_features_list[0]
@@ -458,14 +558,40 @@ class UniADMemory(nn.Module):
                 gate = self.gate_layer(combined)  # [B, N, C]
                 memory_features = gate * channel_features + (1 - gate) * spatial_features
 
-        # Add jitter AFTER memory retrieval/fusion if enabled
-        if self.training and self.feature_jitter:
-            memory_features = self.add_jitter(
-                memory_features, self.feature_jitter.scale, self.feature_jitter.prob
-            )
+        contrastive_loss = torch.tensor(0.0, device=memory_features.device)
+        if self.training and self.feature_jitter is not None:
+            # 1. Feature Jittering
+            jittered_features = self.add_jitter(memory_features, self.feature_jitter.scale, self.feature_jitter.prob)
+            
+            # 2. Global Average Pooling (Chuyển sang Instance-Level Contrast)
+            B = memory_features.shape[1]
+            H = self.feature_size[0]
+            mem_map = rearrange(memory_features, "(h w) b c -> b c h w", h=H)
+            jit_map = rearrange(jittered_features, "(h w) b c -> b c h w", h=H)
+            mem_global = F.adaptive_avg_pool2d(mem_map, (1, 1)).squeeze(-1).squeeze(-1) # F1: Anchor/Pseudo-Normal
+            jit_global = F.adaptive_avg_pool2d(jit_map, (1, 1)).squeeze(-1).squeeze(-1) # F2: Pseudo-Anomaly
+            
+            # 3. Calculate Angle Loss (F1=Normal, F2=Anomaly)
+            # Angle Loss đã được sửa, không cần truyền mask.
+            angle_loss = calculate_angle_loss(mem_global, jit_global, temp=0.15, reduction='mean')
+            
+            # 4. Calculate Norm Loss (Chỉ áp dụng lên Anchor features, coi là Normal)
+            # Norm Loss đã được sửa, không cần truyền mask.
+            norm_loss = calculate_norm_loss(mem_global)
+            
+            contrastive_loss = angle_loss + norm_loss
+            memory_for_encoder = memory_features
+        else: 
+            memory_for_encoder = memory_features
+
+        # Encode features (feature before jittering))
+        encoded_tokens = self.encoder(
+            memory_for_encoder, 
+            pos=pos_embed
+        )  # (H x W) x B x C
         # Decode features
         decoded_tokens = self.decoder(
-            memory_features, 
+            encoded_tokens, 
             encoded_tokens, 
             pos=pos_embed
         )  # (H x W) x B x C
@@ -530,7 +656,8 @@ class UniADMemory(nn.Module):
                 "spatial_attention": spatial_result['att_weight'],
                 "spatial_ssim": spatial_result['ssim_similarity'],
             })
-        
+        if self.training and self.feature_jitter is not None: 
+            output_dict['contrastive_loss'] = contrastive_loss
         return output_dict
 
 
@@ -741,10 +868,10 @@ class TransformerMemoryDecoderLayer(nn.Module):
     ):
         super().__init__()
         # Standard transformer decoder layer components
-        # self.self_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        # self.multihead_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        self.self_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        self.multihead_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        self.self_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        self.multihead_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        # self.self_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        # self.multihead_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
         
         # Feedforward network
         self.linear1 = nn.Linear(hidden_dim, dim_feedforward)

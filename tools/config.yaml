@@ -54,6 +54,7 @@ criterion:
     type: FeatureMSELoss
     kwargs:
       weight: 1.0
+contrastive_weight: 0.1
 
 trainer:
   max_epoch: 700
