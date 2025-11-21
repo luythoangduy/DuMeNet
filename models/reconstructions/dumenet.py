@@ -223,7 +223,7 @@ class Transformer(nn.Module):
             encoder_layer, num_encoder_layers, encoder_norm
         )
 
-        decoder_layer = TransformerMemoryDecoderLayer( # DÙNG LỚP DECODER MỚI CỦA BẠN
+        decoder_layer = TransformerMemoryDecoderLayer( # DÙNG LỚP DECODER MỚI
             hidden_dim,
             nhead, # feature_size đã bị bỏ khỏi TransformerMemoryDecoderLayer
             dim_feedforward,
@@ -361,39 +361,7 @@ class UniADMemory(nn.Module):
             print('use spatial mem')
         else:
             print('no spatial mem')
-        
-        # Transformer encoder
-        # encoder_layer = TransformerEncoderLayer(
-        #     hidden_dim, 
-        #     kwargs.get('nhead', 8), 
-        #     kwargs.get('dim_feedforward', 1024),
-        #     kwargs.get('dropout', 0.1),
-        #     kwargs.get('activation', 'relu'),
-        #     kwargs.get('normalize_before', False)
-        # )
-        encoder_norm = nn.LayerNorm(hidden_dim) if kwargs.get('normalize_before', False) else None
-        # self.encoder = TransformerEncoder(
-        #     encoder_layer, 
-        #     kwargs.get('num_encoder_layers', 4),
-        #     encoder_norm
-        # )
-        
-        # Decoder
-        # decoder_layer = TransformerMemoryDecoderLayer(
-        #     hidden_dim,
-        #     kwargs.get('nhead', 8),
-        #     kwargs.get('dim_feedforward', 1024),
-        #     kwargs.get('dropout', 0.1),
-        #     kwargs.get('activation', 'relu'),
-        #     kwargs.get('normalize_before', False),
-        # )
-        decoder_norm = nn.LayerNorm(hidden_dim)
-        # self.decoder = TransformerDecoder(
-        #     decoder_layer,
-        #     kwargs.get('num_decoder_layers', 4),
-        #     decoder_norm,
-        #     return_intermediate=False,
-        # )
+       
         self.transformer = Transformer( hidden_dim, feature_size, neighbor_mask, nhead=kwargs.get('nhead', 8), num_encoder_layers=kwargs.get('num_encoder_layers', 4), num_decoder_layers=kwargs.get('num_decoder_layers', 4), dim_feedforward=kwargs.get('dim_feedforward', 1024), dropout=kwargs.get('dropout', 0.1), activation=kwargs.get('activation', 'relu'), normalize_before=kwargs.get('normalize_before', False), )
         
         # Feature fusion layer - adapt based on memory mode and fusion method
@@ -571,7 +539,7 @@ class UniADMemory(nn.Module):
         #     encoded_tokens, 
         #     pos=pos_embed
         # )  # (H x W) x B x C
-        decoded_tokens = self.transformer.decoder(memory_features, encoded_tokens, tgt_mask=mask_dec1, memory_mask=mask_dec2, pos=pos_embed_batch)
+        decoded_tokens = self.transformer.decoder(memory_features, memory_features, tgt_mask=mask_dec1, memory_mask=mask_dec2, pos=pos_embed_batch)
         
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
@@ -652,9 +620,6 @@ class TransformerEncoder(nn.Module):
         pos: Optional[Tensor] = None,
     ):
         output = src
-        # pos = torch.cat(
-        #     [pos.unsqueeze(1)] * src.size(1), dim=1
-        # )  # (H X W) x B x C
 
         for layer in self.layers:
             output = layer(
@@ -689,9 +654,6 @@ class TransformerDecoder(nn.Module):
         pos: Optional[Tensor] = None,
     ):
         output = tgt
-        # pos = torch.cat(
-        #     [pos.unsqueeze(1)] * tgt.size(1), dim=1
-        # )  # (H X W) x B x C
 
         intermediate = []
 
