@@ -741,10 +741,10 @@ class TransformerMemoryDecoderLayer(nn.Module):
     ):
         super().__init__()
         # Standard transformer decoder layer components
-        # self.self_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        # self.multihead_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        self.self_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        self.multihead_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        self.self_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        self.multihead_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        # self.self_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        # self.multihead_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
         
         # Feedforward network
         self.linear1 = nn.Linear(hidden_dim, dim_feedforward)
