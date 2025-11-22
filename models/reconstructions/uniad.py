@@ -195,6 +195,106 @@ class SpatialMemoryModule(nn.Module):
             'memory': self.memory
         }
 
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        hidden_dim,
+        feature_size,
+        neighbor_mask,
+        nhead,
+        num_encoder_layers,
+        num_decoder_layers,
+        dim_feedforward,
+        dropout=0.1,
+        activation="relu",
+        normalize_before=False,
+        return_intermediate_dec=False,
+    ):
+        super().__init__()
+        self.feature_size = feature_size
+        self.neighbor_mask = neighbor_mask
+
+        # Sử dụng các lớp Encoder/Decoder layer hiện có
+        encoder_layer = TransformerEncoderLayer( 
+            hidden_dim, nhead, dim_feedforward, dropout, activation, normalize_before
+        )
+        encoder_norm = nn.LayerNorm(hidden_dim) if normalize_before else None
+        self.encoder = TransformerEncoder(
+            encoder_layer, num_encoder_layers, encoder_norm
+        )
+
+        decoder_layer = TransformerMemoryDecoderLayer( # DÙNG LỚP DECODER MỚI
+            hidden_dim,
+            nhead, # feature_size đã bị bỏ khỏi TransformerMemoryDecoderLayer
+            dim_feedforward,
+            dropout,
+            activation,
+            normalize_before,
+        ) 
+        decoder_norm = nn.LayerNorm(hidden_dim)
+        self.decoder = TransformerDecoder(
+            decoder_layer,
+            num_decoder_layers,
+            decoder_norm,
+            return_intermediate=return_intermediate_dec,
+        )
+
+        self.hidden_dim = hidden_dim
+        self.nhead = nhead
+
+    def generate_mask(self, feature_size, neighbor_size):
+        """
+        Generate a square mask for the sequence. The masked positions are filled with float('-inf').
+        Unmasked positions are filled with float(0.0).
+        """
+        h, w = feature_size
+        hm, wm = neighbor_size
+        mask = torch.ones(h, w, h, w)
+        for idx_h1 in range(h):
+            for idx_w1 in range(w):
+                idx_h2_start = max(idx_h1 - hm // 2, 0)
+                idx_h2_end = min(idx_h1 + hm // 2 + 1, h)
+                idx_w2_start = max(idx_w1 - wm // 2, 0)
+                idx_w2_end = min(idx_w1 + wm // 2 + 1, w)
+                mask[
+                    idx_h1, idx_w1, idx_h2_start:idx_h2_end, idx_w2_start:idx_w2_end
+                ] = 0
+        mask = mask.view(h * w, h * w)
+        mask = (
+            mask.float()
+            .masked_fill(mask == 0, float("-inf"))
+            .masked_fill(mask == 1, float(0.0))
+            .to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        ) # Đảm bảo mask cùng device
+        return mask
+
+    def forward(self, src, pos_embed):
+        _, batch_size, _ = src.shape
+        pos_embed_batch = torch.cat(
+            [pos_embed.unsqueeze(1)] * batch_size, dim=1
+        )  # (H X W) x B x C
+
+        if self.neighbor_mask:
+            mask = self.generate_mask(
+                self.feature_size, self.neighbor_mask.neighbor_size
+            )
+            mask_enc = mask if self.neighbor_mask.mask[0] else None
+            mask_dec1 = mask if self.neighbor_mask.mask[1] else None # tgt_mask
+            mask_dec2 = mask if self.neighbor_mask.mask[2] else None # memory_mask
+        else:
+            mask_enc = mask_dec1 = mask_dec2 = None
+
+        output_encoder = self.encoder(
+            src, mask=mask_enc, pos=pos_embed_batch
+        )  # (H X W) x B x C
+        # output_decoder nhận tgt là features sau khi retrieval/fusion, 
+        # và memory là encoded_tokens.
+        # Tuy nhiên, kiến trúc ban đầu của UniAD là output_decoder = self.decoder(output_encoder)
+        # Để giữ kiến trúc Memory hiện tại, ta KHÔNG DÙNG FORWARD CỦA LỚP TRANSFORMER NÀY
+
+        # Để phù hợp với UniADMemory, bạn chỉ cần output_encoder, phần mask sẽ được tạo ở đây
+        # và áp dụng trong lớp Encoder/Decoder
+        return output_encoder, mask_enc, mask_dec1, mask_dec2, pos_embed_batch
 
 class UniADMemory(nn.Module):
     def __init__(
@@ -261,39 +361,8 @@ class UniADMemory(nn.Module):
             print('use spatial mem')
         else:
             print('no spatial mem')
-        
-        # Transformer encoder
-        encoder_layer = TransformerEncoderLayer(
-            hidden_dim, 
-            kwargs.get('nhead', 8), 
-            kwargs.get('dim_feedforward', 1024),
-            kwargs.get('dropout', 0.1),
-            kwargs.get('activation', 'relu'),
-            kwargs.get('normalize_before', False)
-        )
-        encoder_norm = nn.LayerNorm(hidden_dim) if kwargs.get('normalize_before', False) else None
-        self.encoder = TransformerEncoder(
-            encoder_layer, 
-            kwargs.get('num_encoder_layers', 4),
-            encoder_norm
-        )
-        
-        # Decoder
-        decoder_layer = TransformerMemoryDecoderLayer(
-            hidden_dim,
-            kwargs.get('nhead', 8),
-            kwargs.get('dim_feedforward', 1024),
-            kwargs.get('dropout', 0.1),
-            kwargs.get('activation', 'relu'),
-            kwargs.get('normalize_before', False),
-        )
-        decoder_norm = nn.LayerNorm(hidden_dim)
-        self.decoder = TransformerDecoder(
-            decoder_layer,
-            kwargs.get('num_decoder_layers', 4),
-            decoder_norm,
-            return_intermediate=False,
-        )
+       
+        self.transformer = Transformer( hidden_dim, feature_size, neighbor_mask, nhead=kwargs.get('nhead', 8), num_encoder_layers=kwargs.get('num_encoder_layers', 4), num_decoder_layers=kwargs.get('num_decoder_layers', 4), dim_feedforward=kwargs.get('dim_feedforward', 1024), dropout=kwargs.get('dropout', 0.1), activation=kwargs.get('activation', 'relu'), normalize_before=kwargs.get('normalize_before', False), )
         
         # Feature fusion layer - adapt based on memory mode and fusion method
         fusion_input_dim = hidden_dim
@@ -387,7 +456,7 @@ class UniADMemory(nn.Module):
 
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
         # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
@@ -399,9 +468,10 @@ class UniADMemory(nn.Module):
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
         
         # Encode features using transformer encoder
-        encoded_tokens = self.encoder(
-            feature_tokens, pos=pos_embed
-        )  # (H x W) x B x C
+        # encoded_tokens = self.encoder(
+        #     feature_tokens, pos=pos_embed
+        # )  # (H x W) x B x C
+        encoded_tokens, mask_enc, mask_dec1, mask_dec2, pos_embed_batch = self.transformer( feature_tokens, pos_embed )
         # print('encoded_tokens: ', encoded_tokens.shape)
         # Memory retrieval based on memory mode
         memory_features_list = []
@@ -464,15 +534,16 @@ class UniADMemory(nn.Module):
         #         memory_features, self.feature_jitter.scale, self.feature_jitter.prob
         #     )
         # Decode features
-        decoded_tokens = self.decoder(
-            memory_features, 
-            memory_features, 
-            pos=pos_embed
-        )  # (H x W) x B x C
+        # decoded_tokens = self.decoder(
+        #     memory_features, 
+        #     encoded_tokens, 
+        #     pos=pos_embed
+        # )  # (H x W) x B x C
+        decoded_tokens = self.transformer.decoder(memory_features, memory_features, tgt_mask=mask_dec1, memory_mask=mask_dec2, pos=pos_embed_batch)
         
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
-        feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
+        # feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
         # feature_rec_tokens = F.layer_norm(feature_rec_tokens, feature_rec_tokens.shape[-1:])
         # x_min, x_max = feature_rec_tokens.min(), feature_rec_tokens.max()
         # feature_rec_tokens = 2 * (feature_rec_tokens - x_min) / (x_max - x_min + 1e-6) - 1
@@ -498,7 +569,7 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        feature_align = torch.sigmoid(feature_align) 
+        # feature_align = torch.sigmoid(feature_align) 
         # feature_align = F.layer_norm(feature_align, feature_align.shape[1:])
         # x_min, x_max = feature_align.min(), feature_align.max()
         # feature_align = 2 * (feature_align - x_min) / (x_max - x_min + 1e-6) - 1
@@ -549,9 +620,6 @@ class TransformerEncoder(nn.Module):
         pos: Optional[Tensor] = None,
     ):
         output = src
-        pos = torch.cat(
-            [pos.unsqueeze(1)] * src.size(1), dim=1
-        )  # (H X W) x B x C
 
         for layer in self.layers:
             output = layer(
@@ -586,9 +654,6 @@ class TransformerDecoder(nn.Module):
         pos: Optional[Tensor] = None,
     ):
         output = tgt
-        pos = torch.cat(
-            [pos.unsqueeze(1)] * tgt.size(1), dim=1
-        )  # (H X W) x B x C
 
         intermediate = []
 
@@ -975,6 +1040,7 @@ class PositionEmbeddingLearned(nn.Module):
 
 def build_position_embedding(pos_embed_type, feature_size, hidden_dim):
     if pos_embed_type in ("v2", "sine"):
+        # TODO find a better way of exposing other arguments
         pos_embed = PositionEmbeddingSine(feature_size, hidden_dim // 2, normalize=True)
     elif pos_embed_type in ("v3", "learned"):
         pos_embed = PositionEmbeddingLearned(feature_size, hidden_dim // 2)
