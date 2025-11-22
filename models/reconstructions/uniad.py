@@ -372,10 +372,10 @@ class UniADMemory(nn.Module):
         )  # (H x W) x B x C
         
         # Add jitter during training if enabled
-        # if self.training and self.feature_jitter:
-        #     feature_tokens = self.add_jitter(
-        #         feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
-        #     )
+        if self.training and self.feature_jitter:
+            feature_tokens = self.add_jitter(
+                feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
+            )
         # Add random masking during training if enabled
         # if self.training and self.feature_masking:
         #     # print('apply feature masking', self.feature_masking.get('ratio', 0.15), self.feature_masking.get('prob', 0.5))
@@ -459,10 +459,10 @@ class UniADMemory(nn.Module):
                 memory_features = gate * channel_features + (1 - gate) * spatial_features
 
         # Add jitter AFTER memory retrieval/fusion if enabled
-        if self.training and self.feature_jitter:
-            memory_features = self.add_jitter(
-                memory_features, self.feature_jitter.scale, self.feature_jitter.prob
-            )
+        # if self.training and self.feature_jitter:
+        #     memory_features = self.add_jitter(
+        #         memory_features, self.feature_jitter.scale, self.feature_jitter.prob
+        #     )
         # Decode features
         decoded_tokens = self.decoder(
             memory_features, 
