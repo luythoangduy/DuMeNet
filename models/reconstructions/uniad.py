@@ -466,7 +466,7 @@ class UniADMemory(nn.Module):
         # Decode features
         decoded_tokens = self.decoder(
             memory_features, 
-            encoded_tokens, 
+            memory_features, 
             pos=pos_embed
         )  # (H x W) x B x C
         
