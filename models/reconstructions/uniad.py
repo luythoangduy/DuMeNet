@@ -57,6 +57,15 @@ class ChannelMemoryModule(nn.Module):
         # Compute attention scores: Q @ K^T
         attention_scores = torch.mm(queries, keys.t())  # [N_tokens * batch_size, mem_dim]
         
+        if self.training: # Mask memory slot 20%
+            mask_ratio = 0.2
+            num_masked = int(self.mem_dim * mask_ratio)
+            if num_masked > 0:
+                # Chọn ngẫu nhiên index để mask
+                mask_indices = torch.randperm(self.mem_dim, device=attention_scores.device)[:num_masked]
+                # Gán -inf để Softmax bỏ qua các slot này (coi như không tồn tại khi query)
+                attention_scores[:, mask_indices] = float('-inf')
+
         # Apply scale
         attention_scores = attention_scores * self.scale
         
@@ -178,6 +187,15 @@ class SpatialMemoryModule(nn.Module):
         # Compute SSIM similarity between queries và keys
         ssim_similarity = self.compute_ssim_similarity(queries_spatial, keys_spatial)  # [N_tokens * batch_size, mem_dim]
         
+        if self.training: # Mask memory slot 20%
+            mask_ratio = 0.2
+            num_masked = int(self.mem_dim * mask_ratio)
+            if num_masked > 0:
+                # Chọn ngẫu nhiên index để mask
+                mask_indices = torch.randperm(self.mem_dim, device=ssim_similarity.device)[:num_masked]
+                # Gán -inf vào similarity
+                ssim_similarity[:, mask_indices] = float('-inf')
+
         # Apply scale and softmax to get attention weights
         attention_scores = ssim_similarity * self.scale
         att_weight = F.softmax(attention_scores, dim=1)  # [N_tokens * batch_size, mem_dim]
