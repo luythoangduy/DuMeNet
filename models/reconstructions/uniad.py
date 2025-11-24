@@ -68,11 +68,14 @@ class UniADMemory(nn.Module):
                 feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
             )
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
+        x_min, x_max = feature_tokens.min(), feature_tokens.max()
+        feature_tokens = 2 * (feature_tokens - x_min) / (x_max - x_min + 1e-6) - 1
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
         output_decoder, _ = self.transformer(
             feature_tokens, pos_embed
         )  # (H x W) x B x C
         feature_rec_tokens = self.output_proj(output_decoder)  # (H x W) x B x C
+        feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
         feature_rec = rearrange(
             feature_rec_tokens, "(h w) b c -> b c h w", h=self.feature_size[0]
         )  # B x C X H x W
@@ -88,7 +91,7 @@ class UniADMemory(nn.Module):
                 os.makedirs(save_dir, exist_ok=True)
                 feature_rec_np = feat_rec.detach().cpu().numpy()
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
-
+        feature_align = torch.sigmoid(feature_align)
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
         )  # B x 1 x H x W
