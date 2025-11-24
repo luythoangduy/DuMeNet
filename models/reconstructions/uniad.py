@@ -405,11 +405,11 @@ class UniADMemory(nn.Module):
 
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
         # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
-        # x_min, x_max = feature_tokens.min(), feature_tokens.max()
-        # feature_tokens = 2 * (feature_tokens - x_min) / (x_max - x_min + 1e-6) - 1
+        x_min, x_max = feature_tokens.min(), feature_tokens.max()
+        feature_tokens = 2 * (feature_tokens - x_min) / (x_max - x_min + 1e-6) - 1
         # mean = feature_tokens.mean()
         # std = feature_tokens.std()
         # feature_tokens = (feature_tokens - mean) / (std + 1e-6)
