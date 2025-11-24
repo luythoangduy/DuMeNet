@@ -521,7 +521,7 @@ class UniADMemory(nn.Module):
 
         # Compute prediction (reconstruction error)
         # feature_align = torch.sigmoid(feature_align) 
-        feature_align = self.adaptive_act(feature_rec_tokens)
+        feature_align = self.adaptive_act(feature_align)
         # feature_align = F.layer_norm(feature_align, feature_align.shape[1:])
         # x_min, x_max = feature_align.min(), feature_align.max()
         # feature_align = 2 * (feature_align - x_min) / (x_max - x_min + 1e-6) - 1
