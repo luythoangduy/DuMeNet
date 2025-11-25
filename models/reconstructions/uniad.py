@@ -13,36 +13,6 @@ from torch import Tensor, nn
 
 __all__ = ["UniADMemory"]
 
-class AdaptiveSigmoid(nn.Module):
-    def __init__(self, init_k=1.0, learnable=True, channel_wise=False, num_channels=None, min_k=0.5, max_k=10.0):
-        """
-        Args:
-            init_k (float): Giá trị khởi tạo của k.
-            learnable (bool): Có cho phép k học hay không.
-            channel_wise (bool): Học k riêng cho từng kênh.
-            num_channels (int): Số lượng kênh (cần nếu channel_wise=True).
-            min_k (float): Giá trị nhỏ nhất của k (chặn dưới để tránh trivial solution).
-            max_k (float): Giá trị lớn nhất của k (chặn trên để tránh bão hòa gradient).
-        """
-        super().__init__()
-        self.learnable = learnable
-        self.min_k = min_k
-        self.max_k = max_k
-        
-        if learnable:
-            if channel_wise and num_channels is not None:
-                # Học k riêng cho từng kênh (C)
-                self.k_log = nn.Parameter(torch.full((1, 1, num_channels), math.log(init_k)))
-            else:
-                # Học 1 k chung cho toàn bộ (Global)
-                self.k_log = nn.Parameter(torch.tensor(math.log(init_k)))
-        else:
-            self.register_buffer('k_log', torch.tensor(math.log(init_k)))
-
-    def forward(self, x):
-        k = torch.exp(self.k_log) 
-        k = torch.clamp(k, min=self.min_k, max=self.max_k)
-        return torch.sigmoid(k * x)
 
 class ChannelMemoryModule(nn.Module):
     """
@@ -87,6 +57,15 @@ class ChannelMemoryModule(nn.Module):
         # Compute attention scores: Q @ K^T
         attention_scores = torch.mm(queries, keys.t())  # [N_tokens * batch_size, mem_dim]
         
+        if self.training: # Mask memory slot 20%
+            mask_ratio = 0.1
+            num_masked = int(self.mem_dim * mask_ratio)
+            if num_masked > 0:
+                # Chọn ngẫu nhiên index để mask
+                mask_indices = torch.randperm(self.mem_dim, device=attention_scores.device)[:num_masked]
+                # Gán -inf để Softmax bỏ qua các slot này (coi như không tồn tại khi query)
+                attention_scores[:, mask_indices] = float('-inf')
+
         # Apply scale
         attention_scores = attention_scores * self.scale
         
@@ -208,6 +187,15 @@ class SpatialMemoryModule(nn.Module):
         # Compute SSIM similarity between queries và keys
         ssim_similarity = self.compute_ssim_similarity(queries_spatial, keys_spatial)  # [N_tokens * batch_size, mem_dim]
         
+        if self.training: # Mask memory slot 20%
+            mask_ratio = 0.1
+            num_masked = int(self.mem_dim * mask_ratio)
+            if num_masked > 0:
+                # Chọn ngẫu nhiên index để mask
+                mask_indices = torch.randperm(self.mem_dim, device=ssim_similarity.device)[:num_masked]
+                # Gán -inf vào similarity
+                ssim_similarity[:, mask_indices] = float('-inf')
+
         # Apply scale and softmax to get attention weights
         attention_scores = ssim_similarity * self.scale
         att_weight = F.softmax(attention_scores, dim=1)  # [N_tokens * batch_size, mem_dim]
@@ -255,13 +243,6 @@ class UniADMemory(nn.Module):
 
         # Input projection
         self.input_proj = nn.Linear(inplanes[0], hidden_dim)
-
-        self.adaptive_act = AdaptiveSigmoid(
-            init_k=1.0, 
-            learnable=True, 
-            min_k=0.5,  
-            max_k=10.0
-        )
         
         # Memory modules configuration
         self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
@@ -424,7 +405,7 @@ class UniADMemory(nn.Module):
 
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
         # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
@@ -509,7 +490,6 @@ class UniADMemory(nn.Module):
         
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
-        feature_rec_tokens = self.adaptive_act(feature_rec_tokens)
         # feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
         # feature_rec_tokens = F.layer_norm(feature_rec_tokens, feature_rec_tokens.shape[-1:])
         # x_min, x_max = feature_rec_tokens.min(), feature_rec_tokens.max()
@@ -537,7 +517,6 @@ class UniADMemory(nn.Module):
 
         # Compute prediction (reconstruction error)
         # feature_align = torch.sigmoid(feature_align) 
-        feature_align = self.adaptive_act(feature_align)
         # feature_align = F.layer_norm(feature_align, feature_align.shape[1:])
         # x_min, x_max = feature_align.min(), feature_align.max()
         # feature_align = 2 * (feature_align - x_min) / (x_max - x_min + 1e-6) - 1
@@ -549,13 +528,12 @@ class UniADMemory(nn.Module):
         )  # B x 1 x H x W
         
         pred = self.upsample(pred)  # B x 1 x H x W
-        current_k = torch.exp(self.adaptive_act.k_log).detach().mean()
+        
         # Prepare output dictionary based on available memories
         output_dict = {
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
-            "learned_k": current_k,
         }
         
         # Add memory-specific outputs if available
