@@ -298,6 +298,10 @@ def train_one_epoch(
         # forward
         outputs = model(input)
         loss = 0
+        if "learned_k" in outputs:
+            k_val = outputs["learned_k"].item() # .item() để chuyển Tensor về số Python float
+        else:
+            k_val = 1.0
         for name, criterion_loss in criterion.items():
             weight = criterion_loss.weight
             loss += weight * criterion_loss(outputs)
@@ -334,6 +338,7 @@ def train_one_epoch(
                     "train/lr": current_lr,
                     "train/epoch": epoch + (i + 1) / len(train_loader),
                     "step": curr_step + 1,
+                    "train/sigmoid_k": k_val,
                 })
 
             if logger:

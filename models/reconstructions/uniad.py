@@ -14,11 +14,21 @@ from torch import Tensor, nn
 __all__ = ["UniADMemory"]
 
 class AdaptiveSigmoid(nn.Module):
-    def __init__(self, init_k=1.0, learnable=True, channel_wise=False, num_channels=None):
+    def __init__(self, init_k=1.0, learnable=True, channel_wise=False, num_channels=None, min_k=0.5, max_k=10.0):
+        """
+        Args:
+            init_k (float): Giá trị khởi tạo của k.
+            learnable (bool): Có cho phép k học hay không.
+            channel_wise (bool): Học k riêng cho từng kênh.
+            num_channels (int): Số lượng kênh (cần nếu channel_wise=True).
+            min_k (float): Giá trị nhỏ nhất của k (chặn dưới để tránh trivial solution).
+            max_k (float): Giá trị lớn nhất của k (chặn trên để tránh bão hòa gradient).
+        """
         super().__init__()
         self.learnable = learnable
+        self.min_k = min_k
+        self.max_k = max_k
         
-        # Sử dụng log để đảm bảo k luôn dương sau khi exp
         if learnable:
             if channel_wise and num_channels is not None:
                 # Học k riêng cho từng kênh (C)
@@ -30,7 +40,8 @@ class AdaptiveSigmoid(nn.Module):
             self.register_buffer('k_log', torch.tensor(math.log(init_k)))
 
     def forward(self, x):
-        k = torch.exp(self.k_log) # Đảm bảo k > 0
+        k = torch.exp(self.k_log) 
+        k = torch.clamp(k, min=self.min_k, max=self.max_k)
         return torch.sigmoid(k * x)
 
 class ChannelMemoryModule(nn.Module):
@@ -245,7 +256,12 @@ class UniADMemory(nn.Module):
         # Input projection
         self.input_proj = nn.Linear(inplanes[0], hidden_dim)
 
-        self.adaptive_act = AdaptiveSigmoid(init_k=1.0, learnable=True)
+        self.adaptive_act = AdaptiveSigmoid(
+            init_k=1.0, 
+            learnable=True, 
+            min_k=0.5,  
+            max_k=10.0
+        )
         
         # Memory modules configuration
         self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
@@ -533,12 +549,13 @@ class UniADMemory(nn.Module):
         )  # B x 1 x H x W
         
         pred = self.upsample(pred)  # B x 1 x H x W
-        
+        current_k = torch.exp(self.adaptive_act.k_log).detach().mean()
         # Prepare output dictionary based on available memories
         output_dict = {
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
+            "learned_k": current_k,
         }
         
         # Add memory-specific outputs if available
