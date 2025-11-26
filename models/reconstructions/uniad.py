@@ -58,7 +58,7 @@ class ChannelMemoryModule(nn.Module):
         attention_scores = torch.mm(queries, keys.t())  # [N_tokens * batch_size, mem_dim]
         
         if self.training: # Mask memory slot 20%
-            mask_ratio = 0.8
+            mask_ratio = 0.6
             num_masked = int(self.mem_dim * mask_ratio)
             if num_masked > 0:
                 # Chọn ngẫu nhiên index để mask
@@ -188,7 +188,7 @@ class SpatialMemoryModule(nn.Module):
         ssim_similarity = self.compute_ssim_similarity(queries_spatial, keys_spatial)  # [N_tokens * batch_size, mem_dim]
         
         if self.training: # Mask memory slot 20%
-            mask_ratio = 0.8
+            mask_ratio = 0.6
             num_masked = int(self.mem_dim * mask_ratio)
             if num_masked > 0:
                 # Chọn ngẫu nhiên index để mask
