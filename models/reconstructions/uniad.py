@@ -383,12 +383,23 @@ class UniADMemory(nn.Module):
                 
         return feature_tokens
 
+    def compute_stats(self, tensor: torch.Tensor, name: str) -> dict:
+        """Tính toán min, max, mean, std cho một tensor."""
+        stats = {
+            f'{name}_min': tensor.min().item(),
+            f'{name}_max': tensor.max().item(),
+            f'{name}_mean': tensor.mean().item(),
+            f'{name}_std': tensor.std().item(),
+        }
+        # print(f"{name} stats: min={stats[f'{name}_min']}, max={stats[f'{name}_max']}, mean={stats[f'{name}_mean']}, std={stats[f'{name}_std']}")
+        return stats
+    
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
+        backbone_output_stats = self.compute_stats(feature_align, "backbone_output")
         feature_tokens = rearrange(
             feature_align, "b c h w -> (h w) b c"
         )  # (H x W) x B x C
-        
         # Add jitter during training if enabled
         if self.training and self.feature_jitter:
             feature_tokens = self.add_jitter(
@@ -420,6 +431,7 @@ class UniADMemory(nn.Module):
         encoded_tokens = self.encoder(
             feature_tokens, pos=pos_embed
         )  # (H x W) x B x C
+        encoded_stats = self.compute_stats(encoded_tokens, "encoded_feature")
         # print('encoded_tokens: ', encoded_tokens.shape)
         # Memory retrieval based on memory mode
         memory_features_list = []
@@ -487,7 +499,6 @@ class UniADMemory(nn.Module):
             memory_features, 
             pos=pos_embed
         )  # (H x W) x B x C
-        
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
         # feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
@@ -497,6 +508,10 @@ class UniADMemory(nn.Module):
         # mean = feature_rec_tokens.mean()
         # std = feature_rec_tokens.std()
         # feature_rec_tokens = (feature_rec_tokens - mean) / (std + 1e-6)
+        decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
+        decoder_tokens_sigmoid = torch.sigmoid(feature_rec_tokens)
+        decoder_tokens_sigmoid_stats = self.compute_stats(decoder_tokens_sigmoid, "decoder_output_sigmoid")
+
         # Reshape back to spatial representation
         feature_rec = rearrange(
             feature_rec_tokens, "(h w) b c -> b c h w", h=self.feature_size[0]
@@ -534,6 +549,10 @@ class UniADMemory(nn.Module):
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
+            "backbone_output_stats": backbone_output_stats,
+            "encoded_feature_stats": encoded_stats,
+            "decoder_output_raw_stats": decoder_output_stats,
+            "decoder_output_sigmoid_stats": decoder_tokens_sigmoid_stats,
         }
         
         # Add memory-specific outputs if available

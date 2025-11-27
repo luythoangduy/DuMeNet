@@ -4,7 +4,7 @@ import os
 import pprint
 import shutil
 import time
-
+import math
 import torch
 import torch.distributed as dist
 import torch.optim
@@ -265,9 +265,28 @@ def train_one_epoch(
     wandb_run=None,
 ):
 
-    batch_time = AverageMeter(config.trainer.print_freq_step)
-    data_time = AverageMeter(config.trainer.print_freq_step)
-    losses = AverageMeter(config.trainer.print_freq_step)
+    log_freq = config.trainer.print_freq_step
+    batch_time = AverageMeter(log_freq)
+    data_time = AverageMeter(log_freq)
+    losses = AverageMeter(log_freq)
+
+    # --- KHAI BÁO BỘ TÍCH LŨY MỚI (CHIA TÁCH MEAN/STD và MIN/MAX) ---
+    stats_to_accumulate = {}
+    min_max_trackers = {} # Sử dụng dict này cho logic cực trị
+    
+    stat_names = ["backbone_output", "encoded_feature", "decoder_output_raw", "decoder_output_sigmoid"]
+    mean_std_metrics = ["mean", "std"]
+    min_max_metrics = ["min", "max"]
+
+    for name in stat_names:
+        # Khai báo Mean/Std Accumulators (AverageMeter)
+        for metric in mean_std_metrics:
+            key = f"{name}_{metric}"
+            stats_to_accumulate[key] = AverageMeter(log_freq)
+        
+        # Khai báo Min/Max Trackers (Giá trị cực trị ban đầu)
+        min_max_trackers[f"{name}_min"] = float('inf')
+        min_max_trackers[f"{name}_max"] = float('-inf')
 
     model.train()
     # freeze selected layers
@@ -314,6 +333,34 @@ def train_one_epoch(
             reduced_loss = reduced_loss / world_size
         losses.update(reduced_loss.item())
 
+        # --- CẬP NHẬT BỘ TÍCH LŨY (MIN/MAX CỰC TRỊ, MEAN/STD TRUNG BÌNH) ---
+        for name in stat_names:
+            stat_dict_name = f"{name}_stats"
+            stat_dict = outputs.get(stat_dict_name, None)
+            
+            if stat_dict is not None:
+                # Cập nhật MEAN và STD (AverageMeter)
+                for metric in mean_std_metrics:
+                    key = f"{name}_{metric}"
+                    value_to_update = stat_dict.get(key, float('nan'))
+                    
+                    if not math.isnan(value_to_update):
+                        stats_to_accumulate[key].update(value_to_update)
+
+                # Cập nhật MIN và MAX (Cực trị tuyệt đối)
+                current_min = stat_dict.get(f"{name}_min", float('nan'))
+                current_max = stat_dict.get(f"{name}_max", float('nan'))
+
+                min_key = f"{name}_min"
+                max_key = f"{name}_max"
+
+                if not math.isnan(current_min):
+                    min_max_trackers[min_key] = min(min_max_trackers[min_key], current_min)
+                
+                if not math.isnan(current_max):
+                    min_max_trackers[max_key] = max(min_max_trackers[max_key], current_max)
+        # -----------------------------------------------------------------
+
         # backward
         optimizer.zero_grad()
         loss.backward()
@@ -333,13 +380,37 @@ def train_one_epoch(
             
             # Log to wandb
             if wandb_run:
+                stats_to_log = {}
+                
+                # 1. Log MEAN và STD (Lấy .avg và reset AverageMeter)
+                for key, avg_meter in stats_to_accumulate.items():
+                    stats_to_log[f"stats/{key}"] = avg_meter.avg
+                    avg_meter.reset()
+                
+                # 2. Log MIN và MAX (Lấy giá trị cực trị và reset tracker)
+                for key, value in min_max_trackers.items():
+                    stats_to_log[f"stats/{key}"] = value
+                    
+                    # Reset Tracker về giá trị khởi tạo
+                    if key.endswith('_min'):
+                        min_max_trackers[key] = float('inf')
+                    elif key.endswith('_max'):
+                        min_max_trackers[key] = float('-inf')
+
+                # 3. Log tổng hợp WandB
                 wandb_run.log({
                     "train/loss": losses.avg,
                     "train/lr": current_lr,
                     "train/epoch": epoch + (i + 1) / len(train_loader),
                     "step": curr_step + 1,
                     "train/sigmoid_k": k_val,
+                    **stats_to_log
                 })
+                
+                # 4. Reset các metric chung (Sau khi đã log giá trị .avg của chúng)
+                losses.reset()
+                batch_time.reset()
+                data_time.reset()
 
             if logger:
                 logger.info(
