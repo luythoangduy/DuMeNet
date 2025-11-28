@@ -31,8 +31,8 @@ from utils.misc_helper import (
 )
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
-import setproctitle
-setproctitle.setproctitle("Minh Tri is training...")
+# import setproctitle
+# setproctitle.setproctitle("Minh Tri is training...")
 try:
     import wandb
     WANDB_AVAILABLE = True
