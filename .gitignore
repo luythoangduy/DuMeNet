@@ -12,3 +12,4 @@ tools/
 result_recon/
 *.tar
 data/MVTec-AD/mvtec_anomaly_detection/*
+*.pth

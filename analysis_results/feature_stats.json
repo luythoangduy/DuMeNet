@@ -1,0 +1,50 @@
+{
+    "global_mean": -0.08766504377126694,
+    "global_std": 5.8244805335998535,
+    "global_min": -54.85049819946289,
+    "global_max": 55.88566970825195,
+    "percentiles": {
+        "98%_CI": {
+            "lower_percentile": 1.0,
+            "upper_percentile": 99.0,
+            "min": -15.126810073852539,
+            "max": 14.367632865905762
+        },
+        "95%_CI": {
+            "lower_percentile": 2.5,
+            "upper_percentile": 97.5,
+            "min": -12.086105346679688,
+            "max": 11.621670556068409
+        },
+        "90%_CI": {
+            "lower_percentile": 5.0,
+            "upper_percentile": 95.0,
+            "min": -9.666178703308105,
+            "max": 9.352177619934082
+        },
+        "85%_CI": {
+            "lower_percentile": 7.5,
+            "upper_percentile": 92.5,
+            "min": -8.205716133117676,
+            "max": 7.9834489822387695
+        },
+        "80%_CI": {
+            "lower_percentile": 10.0,
+            "upper_percentile": 90.0,
+            "min": -7.1536784172058105,
+            "max": 6.970730447769171
+        },
+        "75%_CI": {
+            "lower_percentile": 12.5,
+            "upper_percentile": 87.5,
+            "min": -6.326105177402496,
+            "max": 6.162856101989746
+        },
+        "70%_CI": {
+            "lower_percentile": 15.0,
+            "upper_percentile": 85.0,
+            "min": -5.630173683166504,
+            "max": 5.488987445831299
+        }
+    }
+}
