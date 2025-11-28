@@ -31,7 +31,8 @@ from utils.misc_helper import (
 )
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
-
+import setproctitle
+setproctitle.setproctitle("Minh Tri is training...")
 try:
     import wandb
     WANDB_AVAILABLE = True
@@ -221,17 +222,17 @@ def main():
                 ret_key_metric = ret_metrics[key_metric]
                 is_best = ret_key_metric >= best_metric
                 best_metric = max(ret_key_metric, best_metric)
-                save_checkpoint(
-                    {
-                        "epoch": epoch + 1,
-                        "arch": config.net,
-                        "state_dict": model.state_dict(),
-                        "best_metric": best_metric,
-                        "optimizer": optimizer.state_dict(),
-                    },
-                    is_best,
-                    config,
-                )
+                # save_checkpoint(
+                #     {
+                #         "epoch": epoch + 1,
+                #         "arch": config.net,
+                #         "state_dict": model.state_dict(),
+                #         "best_metric": best_metric,
+                #         "optimizer": optimizer.state_dict(),
+                #     },
+                #     is_best,
+                #     config,
+                # )
                 
                 # Log best metric to wandb
                 if wandb_run:
