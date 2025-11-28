@@ -416,6 +416,7 @@ class UniADMemory(nn.Module):
 
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
+        k = 0.27
         # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
         # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
@@ -501,16 +502,15 @@ class UniADMemory(nn.Module):
         )  # (H x W) x B x C
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
-        # feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
+        decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
+        feature_rec_tokens = torch.sigmoid(k*feature_rec_tokens)
         # feature_rec_tokens = F.layer_norm(feature_rec_tokens, feature_rec_tokens.shape[-1:])
         # x_min, x_max = feature_rec_tokens.min(), feature_rec_tokens.max()
         # feature_rec_tokens = 2 * (feature_rec_tokens - x_min) / (x_max - x_min + 1e-6) - 1
         # mean = feature_rec_tokens.mean()
         # std = feature_rec_tokens.std()
         # feature_rec_tokens = (feature_rec_tokens - mean) / (std + 1e-6)
-        decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
-        decoder_tokens_sigmoid = torch.sigmoid(feature_rec_tokens)
-        decoder_tokens_sigmoid_stats = self.compute_stats(decoder_tokens_sigmoid, "decoder_output_sigmoid")
+        decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
 
         # Reshape back to spatial representation
         feature_rec = rearrange(
@@ -531,7 +531,8 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        # feature_align = torch.sigmoid(feature_align) 
+        feature_align = torch.sigmoid(k*feature_align) 
+        feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
         # feature_align = F.layer_norm(feature_align, feature_align.shape[1:])
         # x_min, x_max = feature_align.min(), feature_align.max()
         # feature_align = 2 * (feature_align - x_min) / (x_max - x_min + 1e-6) - 1
@@ -553,6 +554,7 @@ class UniADMemory(nn.Module):
             "encoded_feature_stats": encoded_stats,
             "decoder_output_raw_stats": decoder_output_stats,
             "decoder_output_sigmoid_stats": decoder_tokens_sigmoid_stats,
+            "feature_align_sigmoid_stats": feature_align_sigmoid_stats,
         }
         
         # Add memory-specific outputs if available
