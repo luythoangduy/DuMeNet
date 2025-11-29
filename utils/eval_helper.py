@@ -197,7 +197,7 @@ class EvalPerPixelAUC:
         return auc
 
 class EvalProAUC:
-    def __init__(self, data_meta, num_th=100, **kwargs):
+    def __init__(self, data_meta, max_step=200, expect_fpr=0.3, **kwargs):
         # Flatten không cần thiết cho PRO vì cần cấu trúc không gian (H, W),
         # nên ta dùng raw data từ data_meta
         self.preds = data_meta.preds # N x H x W
@@ -205,43 +205,64 @@ class EvalProAUC:
         
         # Đảm bảo masks là nhị phân 0/1
         self.masks[self.masks > 0] = 1
-        self.num_th = num_th
-
+        self.max_step = max_step
+        self.expect_fpr = expect_fpr # Mặc định 0.3
+        
     def eval_auc(self):
-        # 1. Normalize predictions về [0, 1] để chia threshold cho đều
-        # Bước này quan trọng vì output model có thể là logit hoặc khoảng giá trị khác
-        if self.preds.max() == self.preds.min():
-            preds_norm = self.preds
-        else:
-            preds_norm = (self.preds - self.preds.min()) / (self.preds.max() - self.preds.min())
-            
-        # 2. Tạo danh sách thresholds
-        thresholds = np.linspace(0, 1, self.num_th)
+        # Lấy giá trị min và max TRỰC TIẾP từ preds (amaps trong code gốc)
+        min_th, max_th = self.preds.min(), self.preds.max()
         
-        # 3. Chuẩn bị input cho worker
-        # Lưu ý: masks và preds_norm có thể lớn, nên cẩn thận memory nếu dataset quá to.
-        # Ở đây ta pass reference nên ổn.
-        inputs = [(preds_norm, self.masks, th) for th in thresholds]
+        # Tính delta và tạo thresholds
+        # Note: Code gốc dùng np.arange, nhưng np.linspace đảm bảo số bước chính xác hơn
+        delta = (max_th - min_th) / self.max_step
         
-        # 4. Tính toán song song (Multiprocessing)
-        # Sử dụng 8 workers hoặc tuỳ chỉnh theo CPU của bạn
+        # Tạo danh sách thresholds theo cách của code gốc: arange không bao gồm max_th
+        # Sử dụng một epsilon nhỏ để đảm bảo không bị lỗi dấu phẩy động
+        thresholds = np.arange(min_th, max_th, delta)
+        
+        # Nếu ngưỡng không được tạo (min == max), không cần tính toán
+        if len(thresholds) == 0:
+            return 0.0
+
+        # 1. Chuẩn bị input cho worker (Sử dụng preds GỐC, không cần normalize)
+        inputs = [(self.preds, self.masks, th) for th in thresholds]
+        
+        # 2. Tính toán song song (Multiprocessing)
         with Pool(processes=8) as pool:
             results = pool.map(worker_cal_pro_one_threshold, inputs)
             
-        # 5. Tách kết quả
         pros = [item[0] for item in results]
         fprs = [item[1] for item in results]
         
-        # 6. Tính AUC
-        # Sắp xếp theo FPR tăng dần để tính diện tích
+        # 3. Chuyển đổi sang numpy và sắp xếp theo FPR
+        pros, fprs = np.array(pros), np.array(fprs)
         sorted_idxs = np.argsort(fprs)
-        sorted_fprs = np.array(fprs)[sorted_idxs]
-        sorted_pros = np.array(pros)[sorted_idxs]
+        sorted_fprs = fprs[sorted_idxs]
+        sorted_pros = pros[sorted_idxs]
         
-        pro_auc = metrics.auc(sorted_fprs, sorted_pros)
+        # 4. Lọc và Chuẩn hóa (Theo logic code gốc)
         
-        # Giới hạn PRO thường được tính tới FPR = 0.3 (optional, tuỳ bài báo)
-        # Ở đây ta tính full AUC [0, 1] như Image/Pixel AUC
+        # Lọc: Chỉ lấy các cặp (PRO, FPR) có FPR < expect_fpr (0.3)
+        idxes = sorted_fprs < self.expect_fpr
+        filtered_fprs = sorted_fprs[idxes]
+        filtered_pros = sorted_pros[idxes]
+        
+        # Xử lý trường hợp không có điểm nào trong phạm vi
+        if len(filtered_fprs) == 0:
+            return 0.0
+
+        # Chuẩn hóa: Chuẩn hóa trục FPR từ [min(FPR), max(FPR)] về [0, 1]
+        fpr_min = filtered_fprs.min()
+        fpr_max = filtered_fprs.max()
+        
+        # Thêm kiểm tra tránh chia cho 0
+        if fpr_max == fpr_min:
+            return filtered_pros.mean() 
+        
+        normalized_fprs = (filtered_fprs - fpr_min) / (fpr_max - fpr_min)
+        
+        # 5. Tính AU-PRO (AUC trên FPR đã chuẩn hóa)
+        pro_auc = metrics.auc(normalized_fprs, filtered_pros)
         
         return pro_auc
 
