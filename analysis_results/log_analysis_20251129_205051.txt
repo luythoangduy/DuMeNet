@@ -1,0 +1,37 @@
+[2025-11-29 20:50:51,232][extract_and_analyze_features.py][line: 143][    INFO] args: Namespace(config='tools/config.yaml', local_rank=None, single_gpu=True, save_dir='./analysis_results')
+[2025-11-29 20:50:51,764][       utils.py][line: 740][    INFO]  not exist, load from https://github.com/lukemelas/EfficientNet-PyTorch/releases/download/1.0/efficientnet-b4-6ed6700e.pth
+[2025-11-29 20:50:51,970][       utils.py][line: 761][    INFO] Loaded ImageNet pretrained efficientnet-b4
+[2025-11-29 20:50:52,309][custom_dataset.py][line:  36][    INFO] building CustomDataset from: ./data/MVTec-AD/train.json
+[2025-11-29 20:50:52,342][custom_dataset.py][line:  36][    INFO] building CustomDataset from: ./data/MVTec-AD/test.json
+[2025-11-29 20:50:52,369][extract_and_analyze_features.py][line: 188][    INFO] Starting feature extraction on 454 batches...
+[2025-11-29 20:51:15,364][extract_and_analyze_features.py][line: 216][    INFO] Processed 50/454 batches.
+[2025-11-29 20:51:20,677][extract_and_analyze_features.py][line: 216][    INFO] Processed 100/454 batches.
+[2025-11-29 20:51:25,849][extract_and_analyze_features.py][line: 216][    INFO] Processed 150/454 batches.
+[2025-11-29 20:51:31,180][extract_and_analyze_features.py][line: 216][    INFO] Processed 200/454 batches.
+[2025-11-29 20:51:36,662][extract_and_analyze_features.py][line: 216][    INFO] Processed 250/454 batches.
+[2025-11-29 20:51:42,237][extract_and_analyze_features.py][line: 216][    INFO] Processed 300/454 batches.
+[2025-11-29 20:51:48,472][extract_and_analyze_features.py][line: 216][    INFO] Processed 350/454 batches.
+[2025-11-29 20:51:55,359][extract_and_analyze_features.py][line: 216][    INFO] Processed 400/454 batches.
+[2025-11-29 20:52:01,974][extract_and_analyze_features.py][line: 216][    INFO] Processed 450/454 batches.
+[2025-11-29 20:52:04,193][extract_and_analyze_features.py][line: 224][    INFO] Concatenating features...
+[2025-11-29 20:52:04,377][extract_and_analyze_features.py][line: 227][    INFO] Full feature tensor shape: torch.Size([3629, 272, 14, 14])
+[2025-11-29 20:52:05,867][extract_and_analyze_features.py][line: 232][    INFO] Saved feature tensor to: ./analysis_results\backbone_feature_align.pth
+[2025-11-29 20:52:05,867][extract_and_analyze_features.py][line:  36][    INFO] Starting statistical analysis (converting to numpy)...
+[2025-11-29 20:52:07,225][extract_and_analyze_features.py][line:  56][    INFO] ==================================================
+[2025-11-29 20:52:07,226][extract_and_analyze_features.py][line:  57][    INFO] >>> FEATURE ALIGN STATISTICS <<<
+[2025-11-29 20:52:07,226][extract_and_analyze_features.py][line:  58][    INFO] ==================================================
+[2025-11-29 20:52:07,226][extract_and_analyze_features.py][line:  59][    INFO] Total parameters analyzed: 193469248
+[2025-11-29 20:52:07,226][extract_and_analyze_features.py][line:  60][    INFO] Global Mean: 0.496356
+[2025-11-29 20:52:07,226][extract_and_analyze_features.py][line:  61][    INFO] Global Std:  0.367697
+[2025-11-29 20:52:07,226][extract_and_analyze_features.py][line:  62][    INFO] Global Range (Min - Max): [0.000000, 1.000000]
+[2025-11-29 20:52:07,228][extract_and_analyze_features.py][line:  63][    INFO] --------------------------------------------------
+[2025-11-29 20:52:07,228][extract_and_analyze_features.py][line:  69][    INFO] >>> PERCENTILE RANGES (Confidence Intervals) <<<
+[2025-11-29 20:52:11,814][extract_and_analyze_features.py][line:  97][    INFO] 98% CI Range (P01.0 - P99.0): Min = 0.000180, Max = 0.999723, Mean = 0.496284
+[2025-11-29 20:52:15,588][extract_and_analyze_features.py][line:  97][    INFO] 95% CI Range (P02.5 - P97.5): Min = 0.001018, Max = 0.998674, Mean = 0.496170
+[2025-11-29 20:52:19,131][extract_and_analyze_features.py][line:  97][    INFO] 90% CI Range (P05.0 - P95.0): Min = 0.004031, Max = 0.995183, Mean = 0.495970
+[2025-11-29 20:52:22,922][extract_and_analyze_features.py][line:  97][    INFO] 85% CI Range (P07.5 - P92.5): Min = 0.009219, Max = 0.989549, Mean = 0.495762
+[2025-11-29 20:52:26,466][extract_and_analyze_features.py][line:  97][    INFO] 80% CI Range (P10.0 - P90.0): Min = 0.016666, Max = 0.981536, Mean = 0.495546
+[2025-11-29 20:52:30,062][extract_and_analyze_features.py][line:  97][    INFO] 75% CI Range (P12.5 - P87.5): Min = 0.026445, Max = 0.971051, Mean = 0.495321
+[2025-11-29 20:52:33,849][extract_and_analyze_features.py][line:  97][    INFO] 70% CI Range (P15.0 - P85.0): Min = 0.038821, Max = 0.958062, Mean = 0.495087
+[2025-11-29 20:52:33,850][extract_and_analyze_features.py][line:  99][    INFO] ==================================================
+[2025-11-29 20:52:33,851][extract_and_analyze_features.py][line: 106][    INFO] Statistics saved to: ./analysis_results\feature_stats.json

@@ -1,3 +1,4 @@
+# python extract_and_analyze_features.py --config tools/config.yaml --single_gpu
 import argparse
 import logging
 import os
@@ -58,7 +59,7 @@ def calculate_statistics(feature_tensor, logger, save_dir):
     logger.info("=" * 50)
     logger.info(f"Total parameters analyzed: {len(all_values)}")
     logger.info(f"Global Mean: {mean_val:.6f}")
-    logger.info(f"Global Std:  {std_val:.6f}")
+    logger.info(f"Global Std:  {std_val:.6f}")
     logger.info(f"Global Range (Min - Max): [{min_val:.6f}, {max_val:.6f}]")
     logger.info("-" * 50)
 
@@ -76,15 +77,25 @@ def calculate_statistics(feature_tensor, logger, save_dir):
         val_lower = np.percentile(all_values, lower_p)
         val_upper = np.percentile(all_values, upper_p)
         
+        # --- CODE ĐÃ THAY ĐỔI / THÊM MỚI ---
+        # Lọc các giá trị nằm trong khoảng CI
+        filtered_values = all_values[(all_values >= val_lower) & (all_values <= val_upper)]
+        
+        # Tính Mean của các giá trị trong khoảng CI
+        # Đây là Mean của "phần giữa" của dữ liệu, không tính các giá trị ở "đuôi"
+        ci_mean = np.mean(filtered_values)
+        # -----------------------------------
+        
         key = f"{ci}%_CI"
         results["percentiles"][key] = {
             "lower_percentile": lower_p,
             "upper_percentile": upper_p,
             "min": float(val_lower),
-            "max": float(val_upper)
+            "max": float(val_upper),
+            "mean": float(ci_mean) # Đã thêm Mean của CI
         }
         
-        logger.info(f"{ci}% CI Range (P{lower_p:04.1f} - P{upper_p:04.1f}): Min = {val_lower:.6f}, Max = {val_upper:.6f}")
+        logger.info(f"{ci}% CI Range (P{lower_p:04.1f} - P{upper_p:04.1f}): Min = {val_lower:.6f}, Max = {val_upper:.6f}, Mean = {ci_mean:.6f}") # Cập nhật Log
 
     logger.info("=" * 50)
 
