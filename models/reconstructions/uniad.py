@@ -396,7 +396,7 @@ class UniADMemory(nn.Module):
     
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
-        feature_align = feature_align + 0.058038
+        # feature_align = feature_align + 0.058038
         backbone_output_stats = self.compute_stats(feature_align, "backbone_output")
         feature_tokens = rearrange(
             feature_align, "b c h w -> (h w) b c"
@@ -417,8 +417,8 @@ class UniADMemory(nn.Module):
 
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        k = 0.285
-        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        k = 0.25
+        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
         # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
         # x_min, x_max = feature_tokens.min(), feature_tokens.max()
