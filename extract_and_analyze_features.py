@@ -179,14 +179,14 @@ def main():
 
     # --- 3. BUILD DATALOADER ---
     # Sử dụng hàm build_dataloader gốc, đảm bảo distributed=False nếu chạy single GPU
-    train_loader, _ = build_dataloader(config.dataset, distributed=not single_gpu_mode)
-
+    train_loader, test_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode)
+    data_use = test_loader
     # ==============================================================================
     # BẮT ĐẦU QUÁ TRÌNH TRÍCH XUẤT VÀ TÍNH TOÁN
     # ==============================================================================
     
     if rank == 0:
-        logger.info(f"Starting feature extraction on {len(train_loader)} batches...")
+        logger.info(f"Starting feature extraction on {len(data_use)} batches...")
 
     # Đặt model về chế độ eval để cố định BatchNorm và tắt Dropout
     model.eval()
@@ -195,7 +195,7 @@ def main():
 
     # Tắt Gradient hoàn toàn
     with torch.no_grad():
-        for i, input in enumerate(train_loader):
+        for i, input in enumerate(test_loader):
             # Forward pass thông thường qua ModelHelper
             # ModelHelper sẽ tự động gọi backbone -> neck -> reconstruction
             # UniADMemory (reconstruction) sẽ trả về dict chứa "feature_align"
@@ -214,7 +214,7 @@ def main():
 
             # Log tiến độ
             if rank == 0 and (i + 1) % 50 == 0:
-                logger.info(f"Processed {i + 1}/{len(train_loader)} batches.")
+                logger.info(f"Processed {i + 1}/{len(data_use)} batches.")
 
     # ==============================================================================
     # TỔNG HỢP VÀ TÍNH STATS (Chỉ thực hiện trên Rank 0)
