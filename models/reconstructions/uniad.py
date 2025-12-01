@@ -11,6 +11,8 @@ from einops import rearrange
 from models.initializer import initialize_from_cfg
 from torch import Tensor, nn
 
+__all__ = ["UniADMemory"]
+
 
 class UniADMemory(nn.Module):
     def __init__(
@@ -32,19 +34,55 @@ class UniADMemory(nn.Module):
         self.feature_size = feature_size
         self.num_queries = feature_size[0] * feature_size[1]
         self.feature_jitter = feature_jitter
+        self.feature_masking = kwargs.get('feature_masking', None)  # Dict với 'ratio' và 'prob'
         self.pos_embed = build_position_embedding(
             pos_embed_type, feature_size, hidden_dim
         )
         self.save_recon = save_recon
+        self.hidden_dim = hidden_dim
 
-        self.transformer = Transformer(
-            hidden_dim, feature_size, neighbor_mask, **kwargs
-        )
+        # Input projection
         self.input_proj = nn.Linear(inplanes[0], hidden_dim)
+        
+        # Transformer encoder
+        encoder_layer = TransformerEncoderLayer(
+            hidden_dim, 
+            kwargs.get('nhead', 8), 
+            kwargs.get('dim_feedforward', 1024),
+            kwargs.get('dropout', 0.1),
+            kwargs.get('activation', 'relu'),
+            kwargs.get('normalize_before', False)
+        )
+        encoder_norm = nn.LayerNorm(hidden_dim) if kwargs.get('normalize_before', False) else None
+        self.encoder = TransformerEncoder(
+            encoder_layer, 
+            kwargs.get('num_encoder_layers', 4),
+            encoder_norm
+        )
+        
+        # Decoder
+        decoder_layer = TransformerMemoryDecoderLayer(
+            hidden_dim,
+            kwargs.get('nhead', 8),
+            kwargs.get('dim_feedforward', 1024),
+            kwargs.get('dropout', 0.1),
+            kwargs.get('activation', 'relu'),
+            kwargs.get('normalize_before', False),
+        )
+        decoder_norm = nn.LayerNorm(hidden_dim)
+        self.decoder = TransformerDecoder(
+            decoder_layer,
+            kwargs.get('num_decoder_layers', 4),
+            decoder_norm,
+            return_intermediate=False,
+        )
+        # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
-
+        
+        # Upsampling
         self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
 
+        # Initialize parameters
         initialize_from_cfg(self, initializer)
 
     def add_jitter(self, feature_tokens, scale, prob):
@@ -53,33 +91,66 @@ class UniADMemory(nn.Module):
             feature_norms = (
                 feature_tokens.norm(dim=2).unsqueeze(2) / dim_channel
             )  # (H x W) x B x 1
-            jitter = torch.randn((num_tokens, batch_size, dim_channel)).cuda()
+            jitter = torch.randn((num_tokens, batch_size, dim_channel)).to(feature_tokens.device)
             jitter = jitter * feature_norms * scale
             feature_tokens = feature_tokens + jitter
         return feature_tokens
-
+    def compute_stats(self, tensor: torch.Tensor, name: str) -> dict:
+        """Tính toán min, max, mean, std cho một tensor."""
+        stats = {
+            f'{name}_min': tensor.min().item(),
+            f'{name}_max': tensor.max().item(),
+            f'{name}_mean': tensor.mean().item(),
+            f'{name}_std': tensor.std().item(),
+        }
+        # print(f"{name} stats: min={stats[f'{name}_min']}, max={stats[f'{name}_max']}, mean={stats[f'{name}_mean']}, std={stats[f'{name}_std']}")
+        return stats
+    
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
+        # feature_align = feature_align + 0.058038
+        backbone_output_stats = self.compute_stats(feature_align, "backbone_output")
         feature_tokens = rearrange(
             feature_align, "b c h w -> (h w) b c"
         )  # (H x W) x B x C
+        # Add jitter during training if enabled
         if self.training and self.feature_jitter:
             feature_tokens = self.add_jitter(
                 feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
             )
+        
+        # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
         k = 0.57
         feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        
+        # Get positional embeddings
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
-        output_decoder, _ = self.transformer(
-            feature_tokens, pos_embed
+        
+        # Encode features using transformer encoder
+        encoded_tokens = self.encoder(
+            feature_tokens, pos=pos_embed
         )  # (H x W) x B x C
-        feature_rec_tokens = self.output_proj(output_decoder)  # (H x W) x B x C
+        encoded_stats = self.compute_stats(encoded_tokens, "encoded_feature")
+
+        # Decode features
+        decoded_tokens = self.decoder(
+            encoded_tokens, 
+            encoded_tokens, 
+            pos=pos_embed
+        )  # (H x W) x B x C
+        # Project back to original dimension
+        feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
+        decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
         feature_rec_tokens = torch.sigmoid(k*feature_rec_tokens)
+        decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
+
+        # Reshape back to spatial representation
         feature_rec = rearrange(
             feature_rec_tokens, "(h w) b c -> b c h w", h=self.feature_size[0]
         )  # B x C X H x W
 
+        # Save reconstructed features if needed
         if not self.training and self.save_recon:
             clsnames = input["clsname"]
             filenames = input["filename"]
@@ -91,118 +162,29 @@ class UniADMemory(nn.Module):
                 os.makedirs(save_dir, exist_ok=True)
                 feature_rec_np = feat_rec.detach().cpu().numpy()
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
-        feature_align = torch.sigmoid(k*feature_align)
+
+        # Compute prediction (reconstruction error)
+        feature_align = torch.sigmoid(k*feature_align) 
+        feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
         )  # B x 1 x H x W
+        
         pred = self.upsample(pred)  # B x 1 x H x W
-        return {
+        
+        # Prepare output dictionary based on available memories
+        output_dict = {
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
+            "backbone_output_stats": backbone_output_stats,
+            "encoded_feature_stats": encoded_stats,
+            "decoder_output_raw_stats": decoder_output_stats,
+            "decoder_output_sigmoid_stats": decoder_tokens_sigmoid_stats,
+            "feature_align_sigmoid_stats": feature_align_sigmoid_stats,
         }
-
-
-class Transformer(nn.Module):
-    def __init__(
-        self,
-        hidden_dim,
-        feature_size,
-        neighbor_mask,
-        nhead,
-        num_encoder_layers,
-        num_decoder_layers,
-        dim_feedforward,
-        dropout=0.1,
-        activation="relu",
-        normalize_before=False,
-        return_intermediate_dec=False,
-    ):
-        super().__init__()
-        self.feature_size = feature_size
-        self.neighbor_mask = neighbor_mask
-
-        encoder_layer = TransformerEncoderLayer(
-            hidden_dim, nhead, dim_feedforward, dropout, activation, normalize_before
-        )
-        encoder_norm = nn.LayerNorm(hidden_dim) if normalize_before else None
-        self.encoder = TransformerEncoder(
-            encoder_layer, num_encoder_layers, encoder_norm
-        )
-
-        decoder_layer = TransformerDecoderLayer(
-            hidden_dim,
-            feature_size,
-            nhead,
-            dim_feedforward,
-            dropout,
-            activation,
-            normalize_before,
-        )
-        decoder_norm = nn.LayerNorm(hidden_dim)
-        self.decoder = TransformerDecoder(
-            decoder_layer,
-            num_decoder_layers,
-            decoder_norm,
-            return_intermediate=return_intermediate_dec,
-        )
-
-        self.hidden_dim = hidden_dim
-        self.nhead = nhead
-
-    def generate_mask(self, feature_size, neighbor_size):
-        """
-        Generate a square mask for the sequence. The masked positions are filled with float('-inf').
-        Unmasked positions are filled with float(0.0).
-        """
-        h, w = feature_size
-        hm, wm = neighbor_size
-        mask = torch.ones(h, w, h, w)
-        for idx_h1 in range(h):
-            for idx_w1 in range(w):
-                idx_h2_start = max(idx_h1 - hm // 2, 0)
-                idx_h2_end = min(idx_h1 + hm // 2 + 1, h)
-                idx_w2_start = max(idx_w1 - wm // 2, 0)
-                idx_w2_end = min(idx_w1 + wm // 2 + 1, w)
-                mask[
-                    idx_h1, idx_w1, idx_h2_start:idx_h2_end, idx_w2_start:idx_w2_end
-                ] = 0
-        mask = mask.view(h * w, h * w)
-        mask = (
-            mask.float()
-            .masked_fill(mask == 0, float("-inf"))
-            .masked_fill(mask == 1, float(0.0))
-            .cuda()
-        )
-        return mask
-
-    def forward(self, src, pos_embed):
-        _, batch_size, _ = src.shape
-        pos_embed = torch.cat(
-            [pos_embed.unsqueeze(1)] * batch_size, dim=1
-        )  # (H X W) x B x C
-
-        if self.neighbor_mask:
-            mask = self.generate_mask(
-                self.feature_size, self.neighbor_mask.neighbor_size
-            )
-            mask_enc = mask if self.neighbor_mask.mask[0] else None
-            mask_dec1 = mask if self.neighbor_mask.mask[1] else None
-            mask_dec2 = mask if self.neighbor_mask.mask[2] else None
-        else:
-            mask_enc = mask_dec1 = mask_dec2 = None
-
-        output_encoder = self.encoder(
-            src, mask=mask_enc, pos=pos_embed
-        )  # (H X W) x B x C
-        output_decoder = self.decoder(
-            output_encoder,
-            tgt_mask=mask_dec1,
-            memory_mask=mask_dec2,
-            pos=pos_embed,
-        )  # (H X W) x B x C
-
-        return output_decoder, output_encoder
+        
+        return output_dict
 
 
 class TransformerEncoder(nn.Module):
@@ -220,6 +202,9 @@ class TransformerEncoder(nn.Module):
         pos: Optional[Tensor] = None,
     ):
         output = src
+        pos = torch.cat(
+            [pos.unsqueeze(1)] * src.size(1), dim=1
+        )  # (H X W) x B x C
 
         for layer in self.layers:
             output = layer(
@@ -245,6 +230,7 @@ class TransformerDecoder(nn.Module):
 
     def forward(
         self,
+        tgt,
         memory,
         tgt_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
@@ -252,7 +238,10 @@ class TransformerDecoder(nn.Module):
         memory_key_padding_mask: Optional[Tensor] = None,
         pos: Optional[Tensor] = None,
     ):
-        output = memory
+        output = tgt
+        pos = torch.cat(
+            [pos.unsqueeze(1)] * tgt.size(1), dim=1
+        )  # (H X W) x B x C
 
         intermediate = []
 
@@ -356,32 +345,71 @@ class TransformerEncoderLayer(nn.Module):
             return self.forward_pre(src, src_mask, src_key_padding_mask, pos)
         return self.forward_post(src, src_mask, src_key_padding_mask, pos)
 
-
-class TransformerDecoderLayer(nn.Module):
+class EfficientMultiheadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.0, **kwargs):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scaling = self.head_dim**-0.5
+        self.qkv_proj = nn.Linear(embed_dim, embed_dim * 3, bias=False)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.dropout = nn.Dropout(dropout)
+        
+        # Placeholder for Linear/Efficient Attention logic (ví dụ: Softmax cho Q, K)
+        # Thực tế, bạn sẽ thay thế bằng logic Linear Attention cụ thể của mình
+        
+    def forward(self, query, key, value, attn_mask=None, key_padding_mask=None):
+        T, B, C = query.shape # Token length, Batch size, Channels
+        
+        # 1. Project QKV
+        qkv = self.qkv_proj(query) # T x B x 3C
+        qkv = qkv.reshape(T, B, 3, self.num_heads, self.head_dim).permute(2, 1, 3, 0, 4) # 3 x B x H x T x D_h
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        
+        # 2. Efficient Attention Core (ví dụ: Kernel-based/Softmax-on-Q-K)
+        # Ví dụ: Softmax trên Q và K (như trong một số biến thể Linear Attention)
+        q = F.softmax(q * self.scaling, dim=-1) # B x H x T x D_h
+        k = F.softmax(k * self.scaling, dim=-2) # B x H x T x D_h (Softmax trên chiều T)
+        
+        # Linear Attention: Q * (K^T * V)
+        kv = torch.einsum("bhsd,bhse->bhde", k, v) # B x H x D_h x D_h
+        attn_output = torch.einsum("bhsd,bhde->bhse", q, kv) # B x H x T x D_h
+        
+        # 3. Reshape và Output Projection
+        attn_output = attn_output.permute(2, 0, 1, 3).reshape(T, B, C) # T x B x C
+        attn_output = self.dropout(self.out_proj(attn_output))
+        
+        # Trả về output và None (như nn.MultiheadAttention)
+        return attn_output, None
+    
+class TransformerMemoryDecoderLayer(nn.Module):
     def __init__(
         self,
         hidden_dim,
-        feature_size,
         nhead,
-        dim_feedforward,
+        dim_feedforward=2048,
         dropout=0.1,
         activation="relu",
         normalize_before=False,
     ):
         super().__init__()
-        num_queries = feature_size[0] * feature_size[1]
-        self.learned_embed = nn.Embedding(num_queries, hidden_dim)  # (H x W) x C
-
+        # Standard transformer decoder layer components
         self.self_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
         self.multihead_attn = nn.MultiheadAttention(hidden_dim, nhead, dropout=dropout)
-        # Implementation of Feedforward model
+        # self.self_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        # self.multihead_attn = EfficientMultiheadAttention(hidden_dim, nhead, dropout=dropout)
+        
+        # Feedforward network
         self.linear1 = nn.Linear(hidden_dim, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, hidden_dim)
 
+        # Layer normalization
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
         self.norm3 = nn.LayerNorm(hidden_dim)
+        
+        # Dropout layers
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(dropout)
         self.dropout3 = nn.Dropout(dropout)
@@ -394,7 +422,7 @@ class TransformerDecoderLayer(nn.Module):
 
     def forward_post(
         self,
-        out,
+        tgt,
         memory,
         tgt_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
@@ -402,30 +430,26 @@ class TransformerDecoderLayer(nn.Module):
         memory_key_padding_mask: Optional[Tensor] = None,
         pos: Optional[Tensor] = None,
     ):
-        _, batch_size, _ = memory.shape
-        tgt = self.learned_embed.weight
-        tgt = torch.cat([tgt.unsqueeze(1)] * batch_size, dim=1)  # (H X W) x B x C
-
+        # Self attention
+        q = k = self.with_pos_embed(tgt, pos)
         tgt2 = self.self_attn(
-            query=self.with_pos_embed(tgt, pos),
-            key=self.with_pos_embed(memory, pos),
-            value=memory,
-            attn_mask=tgt_mask,
-            key_padding_mask=tgt_key_padding_mask,
+            q, k, value=tgt, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
         )[0]
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
-
+        
+        # Cross attention
         tgt2 = self.multihead_attn(
             query=self.with_pos_embed(tgt, pos),
-            key=self.with_pos_embed(out, pos),
-            value=out,
+            key=self.with_pos_embed(memory, pos),
+            value=memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
         )[0]
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
-
+        
+        # Feedforward
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
         tgt = tgt + self.dropout3(tgt2)
         tgt = self.norm3(tgt)
@@ -433,7 +457,7 @@ class TransformerDecoderLayer(nn.Module):
 
     def forward_pre(
         self,
-        out,
+        tgt,
         memory,
         tgt_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
@@ -441,30 +465,23 @@ class TransformerDecoderLayer(nn.Module):
         memory_key_padding_mask: Optional[Tensor] = None,
         pos: Optional[Tensor] = None,
     ):
-        _, batch_size, _ = memory.shape
-        tgt = self.learned_embed.weight
-        tgt = torch.cat([tgt.unsqueeze(1)] * batch_size, dim=1)  # (H X W) x B x C
-
         tgt2 = self.norm1(tgt)
+        q = k = self.with_pos_embed(tgt2, pos)
         tgt2 = self.self_attn(
-            query=self.with_pos_embed(tgt2, pos),
-            key=self.with_pos_embed(memory, pos),
-            value=memory,
-            attn_mask=tgt_mask,
-            key_padding_mask=tgt_key_padding_mask,
+            q, k, value=tgt2, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
         )[0]
         tgt = tgt + self.dropout1(tgt2)
-
+        
         tgt2 = self.norm2(tgt)
         tgt2 = self.multihead_attn(
             query=self.with_pos_embed(tgt2, pos),
-            key=self.with_pos_embed(out, pos),
-            value=out,
+            key=self.with_pos_embed(memory, pos),
+            value=memory,
             attn_mask=memory_mask,
             key_padding_mask=memory_key_padding_mask,
         )[0]
         tgt = tgt + self.dropout2(tgt2)
-
+        
         tgt2 = self.norm3(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
         tgt = tgt + self.dropout3(tgt2)
@@ -472,7 +489,7 @@ class TransformerDecoderLayer(nn.Module):
 
     def forward(
         self,
-        out,
+        tgt,
         memory,
         tgt_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
@@ -482,7 +499,7 @@ class TransformerDecoderLayer(nn.Module):
     ):
         if self.normalize_before:
             return self.forward_pre(
-                out,
+                tgt,
                 memory,
                 tgt_mask,
                 memory_mask,
@@ -491,7 +508,7 @@ class TransformerDecoderLayer(nn.Module):
                 pos,
             )
         return self.forward_post(
-            out,
+            tgt,
             memory,
             tgt_mask,
             memory_mask,
@@ -513,7 +530,15 @@ def _get_activation_fn(activation):
         return F.gelu
     if activation == "glu":
         return F.glu
-    raise RuntimeError(f"activation should be relu/gelu, not {activation}.")
+    if activation == "celu":
+        return F.celu
+    if activation == "selu":
+        return F.selu
+    if activation == "silu":
+        return F.silu
+    if activation == "elu":
+        return F.elu
+    raise RuntimeError
 
 
 class PositionEmbeddingSine(nn.Module):
@@ -542,7 +567,7 @@ class PositionEmbeddingSine(nn.Module):
         self.scale = scale
 
     def forward(self, tensor):
-        not_mask = torch.ones((self.feature_size[0], self.feature_size[1]))  # H x W
+        not_mask = torch.ones((self.feature_size[0], self.feature_size[1]), device=tensor.device)  # H x W
         y_embed = not_mask.cumsum(0, dtype=torch.float32)
         x_embed = not_mask.cumsum(1, dtype=torch.float32)
         if self.normalize:
@@ -550,7 +575,7 @@ class PositionEmbeddingSine(nn.Module):
             y_embed = y_embed / (y_embed[-1:, :] + eps) * self.scale
             x_embed = x_embed / (x_embed[:, -1:] + eps) * self.scale
 
-        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32)
+        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=tensor.device)
         dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
 
         pos_x = x_embed[:, :, None] / dim_t
@@ -562,7 +587,7 @@ class PositionEmbeddingSine(nn.Module):
             (pos_y[:, :, 0::2].sin(), pos_y[:, :, 1::2].cos()), dim=3
         ).flatten(2)
         pos = torch.cat((pos_y, pos_x), dim=2).flatten(0, 1)  # (H X W) X C
-        return pos.to(tensor.device)
+        return pos
 
 
 class PositionEmbeddingLearned(nn.Module):
@@ -601,10 +626,8 @@ class PositionEmbeddingLearned(nn.Module):
         )  # (H X W) X C
         return pos
 
-
 def build_position_embedding(pos_embed_type, feature_size, hidden_dim):
     if pos_embed_type in ("v2", "sine"):
-        # TODO find a better way of exposing other arguments
         pos_embed = PositionEmbeddingSine(feature_size, hidden_dim // 2, normalize=True)
     elif pos_embed_type in ("v3", "learned"):
         pos_embed = PositionEmbeddingLearned(feature_size, hidden_dim // 2)
