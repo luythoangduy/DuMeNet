@@ -81,7 +81,21 @@ class UniADMemory(nn.Module):
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
         self.stats_config = stats_config # Lưu config
-        self.channel_k_values = self.load_channel_k_values()
+        # 1. Lấy danh sách K đã được tính toán từ file train_val.py (EasyDict)
+        global k_list 
+        k_list = stats_config.get('k_values_272', None) 
+        
+        # 2. Xử lý fallback nếu k_values chưa được tính hoặc không tồn tại (sẽ là list rỗng hoặc None)
+        if k_list is None or len(k_list) != self.input_channel_dim:
+            print(f"WARNING: K values not found in config or size mismatch. Using default k=1.0 for {self.input_channel_dim} channels.")
+            k_tensor = torch.ones(self.input_channel_dim, dtype=torch.float32)
+        else:
+            print(f"Successfully initialized K-values from calculated config ({self.input_channel_dim} channels).")
+            k_tensor = torch.tensor(k_list, dtype=torch.float32)
+            print(f"K-values stats: min={k_tensor.min().item()}, max={k_tensor.max().item()}, mean={k_tensor.mean().item()}, std={k_tensor.std().item()}")
+            
+        # 3. Lưu K tensor vào self (nn.Parameter)
+        self.channel_k_values = nn.Parameter(k_tensor, requires_grad=False)
         
         # Upsampling
         self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
@@ -109,56 +123,6 @@ class UniADMemory(nn.Module):
         }
         # print(f"{name} stats: min={stats[f'{name}_min']}, max={stats[f'{name}_max']}, mean={stats[f'{name}_mean']}, std={stats[f'{name}_std']}")
         return stats
-    
-    def load_channel_k_values(self):
-        """Loads channel-wise k_ci_value from the combined stats file."""
-        stats_file_path = self.stats_config.get('stats_file', 'analysis_results/feature_stats_combined.json')
-        ci_ratio = self.stats_config.get('ci_ratio', 80) # Default là 80%
-        
-        if not os.path.exists(stats_file_path):
-            print(f"WARNING: Stats file not found at {stats_file_path}. Using default k=1.0 for all channels.")
-            # Fallback to default k=1.0 if file not found
-            return torch.ones(self.input_channel_dim, dtype=torch.float32)
-
-        try:
-            with open(stats_file_path, 'r') as f:
-                stats = json.load(f)
-        except Exception as e:
-            print(f"ERROR reading stats file {stats_file_path}: {e}. Using default k=1.0.")
-            return torch.ones(self.input_channel_dim, dtype=torch.float32)
-
-        k_values = []
-        ci_key = f"{ci_ratio}%_CI"
-        
-        # Lấy số kênh (C) từ shape đầu tiên (Feature Align)
-        num_channels = stats['global_stats']['feature_shape'][1] 
-        
-        # Đảm bảo danh sách channel_stats có đủ kênh
-        if len(stats['channel_stats']) != num_channels:
-            print(f"WARNING: Expected {num_channels} channels, found {len(stats['channel_stats'])}. Using default k=1.0.")
-            return torch.ones(self.input_channel_dim, dtype=torch.float32)
-
-        for channel_stat in stats['channel_stats']:
-            try:
-                # Trích xuất k_ci_value tương ứng
-                k_val = channel_stat['percentiles'][ci_key]['k_ci_value']
-                k_values.append(k_val)
-            except KeyError:
-                print(f"WARNING: k_ci_value for {ci_key} not found in channel {channel_stat['channel_idx']}. Using default k=1.0.")
-                k_values.append(1.0)
-                
-        # Chuyển list sang tensor và đặt vào device (sẽ được move cùng module sau)
-        k_tensor = torch.tensor(k_values, dtype=torch.float32)
-        
-        # Kích thước phải là [C]
-        if k_tensor.shape[0] != self.input_channel_dim:
-             # Nếu hidden_dim != C, cần phải kiểm tra lại (thường hidden_dim = C ở lớp này)
-             print(f"ERROR: Loaded K dimension {k_tensor.shape[0]} != hidden_dim {self.hidden_dim}. Using default k=1.0.")
-             return torch.ones(self.input_channel_dim, dtype=torch.float32)
-
-        print(f"Successfully loaded {len(k_values)} channel K-values for {ci_key}.")
-        return nn.Parameter(k_tensor, requires_grad=False) # Lưu K dưới dạng Parameter không cần gradient
-
     
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W (B x 272 x 14 x 14)
@@ -231,7 +195,8 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        feature_align = torch.sigmoid(feature_align * k_spatial_aligned) 
+        if k_list is not None:
+            feature_align = torch.sigmoid(feature_align * k_spatial_aligned) 
         feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)

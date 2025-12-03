@@ -31,6 +31,7 @@ from utils.misc_helper import (
 )
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
+import numpy as np
 # import setproctitle
 # setproctitle.setproctitle("Minh Tri is training...")
 try:
@@ -46,6 +47,79 @@ parser.add_argument("-e", "--evaluate", action="store_true")
 parser.add_argument("--local_rank", default=None, help="local rank for dist")
 parser.add_argument("--single_gpu", action="store_true", help="Use single GPU mode")
 
+def calculate_channel_k_values(data_loader, model, ci_ratio, logger, single_gpu_mode, rank):
+    """
+    Chạy qua toàn bộ dataset (backbone features) để tính toán k_ci_value theo từng kênh.
+    """
+    if rank == 0 and logger:
+        logger.info("Starting ONE-TIME feature extraction for K-scaling calculation...")
+        logger.info(f"Target CI Ratio: {ci_ratio}%")
+    
+    model.eval()
+    all_features = []
+
+    with torch.no_grad():
+        for i, input in enumerate(data_loader):
+            # 1. Forward qua Backbone/Neck (giả định đây là phần tạo ra feature_align)
+            # Vì ta chỉ cần output của backbone/neck, ta cần gọi ModelHelper theo cách lấy output của neck
+            # Tuy nhiên, ModelHelper chỉ cung cấp interface outputs = model(input).
+            # Tốt nhất là sử dụng outputs["feature_align"] (nếu UniADMemory đã được bypass/xóa).
+            # TẠM THỜI: Chúng ta sẽ dùng ModelHelper(config.net) và giả định outputs có 'feature_align'.
+            outputs = model(input) 
+            
+            if "feature_align" in outputs:
+                feature_align = outputs["feature_align"] # B x C x H x W
+                all_features.append(feature_align.cpu())
+            else:
+                if rank == 0 and logger and i == 0:
+                    logger.error("Key 'feature_align' not found in model outputs during K calculation.")
+                return None
+
+            if rank == 0 and (i + 1) % 100 == 0:
+                logger.info(f"K-calculation progress: Processed {i + 1}/{len(data_loader)} batches.")
+
+    if not single_gpu_mode:
+        dist.barrier()
+        
+    if rank != 0:
+        return None
+        
+    # RANK 0: Tính toán thống kê
+    if len(all_features) == 0:
+        logger.error("No features extracted for K-scaling calculation.")
+        return None
+
+    full_feature_tensor = torch.cat(all_features, dim=0) # N x C x H x W
+    N, C, H, W = full_feature_tensor.shape
+    
+    # 1. Chuyển tensor về shape [C, N*H*W]
+    feature_np = full_feature_tensor.permute(1, 0, 2, 3).reshape(C, -1).numpy()
+    
+    k_values = []
+    ci_key = f"{ci_ratio}%_CI"
+    tail = (100 - ci_ratio) / 2.0
+    lower_p = tail
+    upper_p = 100 - tail
+
+    for channel_idx in range(C):
+        channel_values = feature_np[channel_idx]
+        
+        # Tính Percentiles
+        val_lower = np.percentile(channel_values, lower_p)
+        val_upper = np.percentile(channel_values, upper_p)
+        value_range = val_upper - val_lower
+        
+        # Tính K-value
+        if value_range > 1e-6:
+            k_val = 8.0 / value_range
+            k_val_rounded = round(k_val, 3)
+        else:
+            k_val_rounded = 1.0 # Fallback an toàn
+
+        k_values.append(k_val_rounded)
+
+    logger.info(f"K-Scaling Calculation Complete: Generated {C} K values.")
+    return k_values
 
 def main():
     global args, config, key_metric, best_metric
@@ -96,6 +170,43 @@ def main():
     reproduce = config.get("reproduce", None)
     if random_seed:
         set_random_seed(random_seed, reproduce)
+
+    # Tải Model chỉ với Backbone và Neck
+    model_for_k_calc = ModelHelper(config.net)
+    model_for_k_calc.cuda()
+    
+    # DDP/DP setup (giữ nguyên logic single_gpu_mode)
+    if single_gpu_mode:
+        if torch.cuda.device_count() > 1:
+            model_for_k_calc = DataParallel(model_for_k_calc)
+        use_ddp_k = False
+    else:
+        # Nếu DDP, ta không cần DDP ở đây vì ta sẽ load weights lại sau
+        use_ddp_k = True 
+
+    # Khởi tạo dataloader (chỉ cần train loader cho K calculation)
+    train_loader, _ = build_dataloader(config.dataset, distributed=not single_gpu_mode)
+    
+    # 2. TÍNH TOÁN K VALUES
+    ci_ratio = config.net[-1].kwargs.stats_config.ci_ratio 
+    
+    # Tính toán K values (chạy trên toàn bộ dataset)
+    calculated_k_values = calculate_channel_k_values(
+        train_loader, model_for_k_calc, ci_ratio, logger, single_gpu_mode, rank
+    )
+    
+    # HỦY TẢI MODEL TẠM THỜI
+    del model_for_k_calc
+    
+    # 3. CẬP NHẬT CONFIG CHÍNH
+    if calculated_k_values is not None:
+        # Cập nhật danh sách K values vào cấu hình cho module reconstruction
+        config.net[-1].kwargs.stats_config.k_values_272 = calculated_k_values
+        if rank == 0 and logger:
+            logger.info("Updated config with calculated channel K values.")
+    else:
+        if rank == 0 and logger:
+            logger.warning("Could not calculate K values. Proceeding with default k=1.0 fallback.")
 
     # create model
     model = ModelHelper(config.net)
