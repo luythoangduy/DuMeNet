@@ -3,7 +3,7 @@ import math
 import os
 import random
 from typing import Optional
-
+import json
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -26,6 +26,7 @@ class UniADMemory(nn.Module):
         pos_embed_type,
         save_recon,
         initializer,
+        stats_config,
         **kwargs,
     ):
         super().__init__()
@@ -39,6 +40,7 @@ class UniADMemory(nn.Module):
             pos_embed_type, feature_size, hidden_dim
         )
         self.save_recon = save_recon
+        self.input_channel_dim = inplanes[0]
         self.hidden_dim = hidden_dim
 
         # Input projection
@@ -78,6 +80,8 @@ class UniADMemory(nn.Module):
         )
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
+        self.stats_config = stats_config # Lưu config
+        self.channel_k_values = self.load_channel_k_values()
         
         # Upsampling
         self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
@@ -106,8 +110,58 @@ class UniADMemory(nn.Module):
         # print(f"{name} stats: min={stats[f'{name}_min']}, max={stats[f'{name}_max']}, mean={stats[f'{name}_mean']}, std={stats[f'{name}_std']}")
         return stats
     
+    def load_channel_k_values(self):
+        """Loads channel-wise k_ci_value from the combined stats file."""
+        stats_file_path = self.stats_config.get('stats_file', 'analysis_results/feature_stats_combined.json')
+        ci_ratio = self.stats_config.get('ci_ratio', 80) # Default là 80%
+        
+        if not os.path.exists(stats_file_path):
+            print(f"WARNING: Stats file not found at {stats_file_path}. Using default k=1.0 for all channels.")
+            # Fallback to default k=1.0 if file not found
+            return torch.ones(self.input_channel_dim, dtype=torch.float32)
+
+        try:
+            with open(stats_file_path, 'r') as f:
+                stats = json.load(f)
+        except Exception as e:
+            print(f"ERROR reading stats file {stats_file_path}: {e}. Using default k=1.0.")
+            return torch.ones(self.input_channel_dim, dtype=torch.float32)
+
+        k_values = []
+        ci_key = f"{ci_ratio}%_CI"
+        
+        # Lấy số kênh (C) từ shape đầu tiên (Feature Align)
+        num_channels = stats['global_stats']['feature_shape'][1] 
+        
+        # Đảm bảo danh sách channel_stats có đủ kênh
+        if len(stats['channel_stats']) != num_channels:
+            print(f"WARNING: Expected {num_channels} channels, found {len(stats['channel_stats'])}. Using default k=1.0.")
+            return torch.ones(self.input_channel_dim, dtype=torch.float32)
+
+        for channel_stat in stats['channel_stats']:
+            try:
+                # Trích xuất k_ci_value tương ứng
+                k_val = channel_stat['percentiles'][ci_key]['k_ci_value']
+                k_values.append(k_val)
+            except KeyError:
+                print(f"WARNING: k_ci_value for {ci_key} not found in channel {channel_stat['channel_idx']}. Using default k=1.0.")
+                k_values.append(1.0)
+                
+        # Chuyển list sang tensor và đặt vào device (sẽ được move cùng module sau)
+        k_tensor = torch.tensor(k_values, dtype=torch.float32)
+        
+        # Kích thước phải là [C]
+        if k_tensor.shape[0] != self.input_channel_dim:
+             # Nếu hidden_dim != C, cần phải kiểm tra lại (thường hidden_dim = C ở lớp này)
+             print(f"ERROR: Loaded K dimension {k_tensor.shape[0]} != hidden_dim {self.hidden_dim}. Using default k=1.0.")
+             return torch.ones(self.input_channel_dim, dtype=torch.float32)
+
+        print(f"Successfully loaded {len(k_values)} channel K-values for {ci_key}.")
+        return nn.Parameter(k_tensor, requires_grad=False) # Lưu K dưới dạng Parameter không cần gradient
+
+    
     def forward(self, input):
-        feature_align = input["feature_align"]  # B x C X H x W
+        feature_align = input["feature_align"]  # B x C X H x W (B x 272 x 14 x 14)
         # feature_align = feature_align + 0.058038
         backbone_output_stats = self.compute_stats(feature_align, "backbone_output")
         feature_tokens = rearrange(
@@ -120,8 +174,19 @@ class UniADMemory(nn.Module):
             )
         
         # Project input features
-        feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
-        k = 0.57
+        feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C_hidden (196 x B x 256)
+        
+        # SỬA DÒNG NÀY: Lấy K values và căn chỉnh kích thước cho phép nhân/broadcast
+        k_channel_values = self.channel_k_values.to(feature_align.device)
+
+        # 1. Kích thước cho feature_rec_tokens (H*W x B x C_output): cần (1, 1, C)
+        k_token_aligned = k_channel_values.unsqueeze(0).unsqueeze(0) 
+        
+        # 2. Kích thước cho feature_align (B x C x H x W): cần (1, C, 1, 1)
+        k_spatial_aligned = k_channel_values.view(1, -1, 1, 1)
+        
+        # k_channel = self.channel_k_values.unsqueeze(0).unsqueeze(0) # DÒNG CŨ
+        # k = 0.57
         feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         
         # Get positional embeddings
@@ -140,9 +205,11 @@ class UniADMemory(nn.Module):
             pos=pos_embed
         )  # (H x W) x B x C
         # Project back to original dimension
-        feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
+        feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C_output
         decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
-        feature_rec_tokens = torch.sigmoid(k*feature_rec_tokens)
+        
+        # SỬA DÒNG NÀY: Nhân k_token_aligned (1 x 1 x 272) với feature_rec_tokens (H*W x B x 272)
+        feature_rec_tokens = torch.sigmoid(feature_rec_tokens * k_token_aligned) 
         decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
 
         # Reshape back to spatial representation
@@ -164,7 +231,7 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        feature_align = torch.sigmoid(k*feature_align) 
+        feature_align = torch.sigmoid(feature_align * k_spatial_aligned) 
         feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)

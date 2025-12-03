@@ -31,80 +31,154 @@ parser.add_argument("--save_dir", default="./analysis_results", help="Dir to sav
 
 def calculate_statistics(feature_tensor, logger, save_dir):
     """
-    Tính toán Mean, Std, Range và các khoảng Percentile (CI).
+    Tính toán thống kê:
+    1. Global: Mean, Std, Range, K-global trên toàn bộ tensor.
+    2. Channel-wise: Mean, Std, Range, K-channel, và K-CI cho từng CI riêng biệt của mỗi channel.
     feature_tensor: Tensor chứa toàn bộ feature_align [N, C, H, W]
     """
     logger.info("Starting statistical analysis (converting to numpy)...")
     
-    # Flatten toàn bộ dữ liệu thành 1 mảng 1 chiều để tính toán global
-    # Việc này có thể tốn RAM nếu dataset quá lớn
+    # Kích thước tensor
+    N, C, H, W = feature_tensor.shape
+    elements_per_channel = N * H * W
+    cis = [98, 95, 90, 85, 80, 75, 70] 
+    
+    # --------------------------------------------------------------------------
+    # I. GLOBAL STATISTICS (Tính trên toàn bộ N*C*H*W giá trị)
+    # --------------------------------------------------------------------------
+    logger.info("=" * 50)
+    logger.info(">>> FEATURE ALIGN GLOBAL STATISTICS <<<")
+    
+    # Flatten toàn bộ dữ liệu (Chỉ làm 1 lần để tính Global)
     all_values = feature_tensor.flatten().cpu().numpy()
     
-    # 1. Thống kê cơ bản
-    mean_val = np.mean(all_values)
-    std_val = np.std(all_values)
-    min_val = np.min(all_values)
-    max_val = np.max(all_values)
-
-    results = {
-        "global_mean": float(mean_val),
-        "global_std": float(std_val),
-        "global_min": float(min_val),
-        "global_max": float(max_val),
-        "percentiles": {}
-    }
-
-    logger.info("=" * 50)
-    logger.info(">>> FEATURE ALIGN STATISTICS <<<")
-    logger.info("=" * 50)
-    logger.info(f"Total parameters analyzed: {len(all_values)}")
-    logger.info(f"Global Mean: {mean_val:.6f}")
-    logger.info(f"Global Std:  {std_val:.6f}")
-    logger.info(f"Global Range (Min - Max): [{min_val:.6f}, {max_val:.6f}]")
-    logger.info("-" * 50)
-
-    # 2. Tính toán các khoảng tin cậy (Confidence Intervals - CI)
-    # Ví dụ: 98% CI nghĩa là bỏ 1% thấp nhất và 1% cao nhất (P1 - P99)
-    cis = [98, 95, 90, 85, 80, 75, 70]
+    global_mean = np.mean(all_values)
+    global_std = np.std(all_values)
+    global_min = np.min(all_values)
+    global_max = np.max(all_values)
+    global_range = global_max - global_min
     
-    logger.info(">>> PERCENTILE RANGES (Confidence Intervals) <<<")
-    for ci in cis:
-        # Tính phần đuôi cần loại bỏ
-        tail = (100 - ci) / 2.0
-        lower_p = tail
-        upper_p = 100 - tail
+    # Tính K-global
+    if global_range > 1e-6:
+        k_global = 8.0 / global_range
+        k_global_rounded = round(k_global, 3)
+    else:
+        k_global_rounded = float('inf')
+
+    global_results = {
+        "feature_shape": [N, C, H, W],
+        "global_mean": float(global_mean),
+        "global_std": float(global_std),
+        "global_min": float(global_min),
+        "global_max": float(global_max),
+        "global_range": float(global_range),
+        "global_k_value": k_global_rounded,
+    }
+    
+    logger.info(f"Total elements analyzed: {len(all_values)}")
+    logger.info(f"Global Mean: {global_mean:.6f}, Global Std: {global_std:.6f}")
+    logger.info(f"Global Range (Min - Max): [{global_min:.6f}, {global_max:.6f}]")
+    logger.info(f"Calculated K-Global: {k_global_rounded}")
+    logger.info("=" * 50)
+
+    # --------------------------------------------------------------------------
+    # II. CHANNEL-WISE STATISTICS (Tính trên từng channel)
+    # --------------------------------------------------------------------------
+    logger.info(f">>> FEATURE ALIGN CHANNEL-WISE STATISTICS ({C} Channels) <<<")
+    
+    # Reshape tensor về shape [C, N*H*W]
+    feature_np = feature_tensor.permute(1, 0, 2, 3).reshape(C, -1).cpu().numpy()
+    channel_stats_list = []
+    
+    # Lặp qua từng channel
+    for channel_idx in range(C):
+        channel_values = feature_np[channel_idx]
         
-        val_lower = np.percentile(all_values, lower_p)
-        val_upper = np.percentile(all_values, upper_p)
-        
-        # --- CODE ĐÃ THAY ĐỔI / THÊM MỚI ---
-        # Lọc các giá trị nằm trong khoảng CI
-        filtered_values = all_values[(all_values >= val_lower) & (all_values <= val_upper)]
-        
-        # Tính Mean của các giá trị trong khoảng CI
-        # Đây là Mean của "phần giữa" của dữ liệu, không tính các giá trị ở "đuôi"
-        ci_mean = np.mean(filtered_values)
-        # -----------------------------------
-        
-        key = f"{ci}%_CI"
-        results["percentiles"][key] = {
-            "lower_percentile": lower_p,
-            "upper_percentile": upper_p,
-            "min": float(val_lower),
-            "max": float(val_upper),
-            "mean": float(ci_mean) # Đã thêm Mean của CI
+        # Thống kê cơ bản của channel
+        mean_val = np.mean(channel_values)
+        std_val = np.std(channel_values)
+        min_val = np.min(channel_values)
+        max_val = np.max(channel_values)
+        channel_range = max_val - min_val
+
+        # Tính K-channel (K dựa trên Min/Max toàn channel)
+        if channel_range > 1e-6:
+            k_channel = 8.0 / channel_range
+            k_channel_rounded = round(k_channel, 3)
+        else:
+            k_channel_rounded = float('inf')
+
+        channel_result = {
+            "channel_idx": channel_idx,
+            "mean": float(mean_val),
+            "std": float(std_val),
+            "min": float(min_val),
+            "max": float(max_val),
+            "range": float(channel_range),
+            "k_channel_value": k_channel_rounded, # K-value dựa trên Min/Max của channel
+            "percentiles": {}
         }
+
+        # Log cơ bản
+        if channel_idx < 5 or channel_idx == C - 1:
+             logger.info(f"--- Channel {channel_idx} ---")
+             logger.info(f"Mean: {mean_val:.6f}, Std: {std_val:.6f}")
+             logger.info(f"Range: [{min_val:.6f}, {max_val:.6f}], K_channel: {k_channel_rounded}")
         
-        logger.info(f"{ci}% CI Range (P{lower_p:04.1f} - P{upper_p:04.1f}): Min = {val_lower:.6f}, Max = {val_upper:.6f}, Mean = {ci_mean:.6f}") # Cập nhật Log
+        # Tính toán các khoảng tin cậy (Confidence Intervals - CI) cho channel
+        for ci in cis:
+            tail = (100 - ci) / 2.0
+            lower_p = tail
+            upper_p = 100 - tail
+            
+            val_lower = np.percentile(channel_values, lower_p)
+            val_upper = np.percentile(channel_values, upper_p)
+            
+            # Tính Mean của các giá trị trong khoảng CI
+            filtered_values = channel_values[(channel_values >= val_lower) & (channel_values <= val_upper)]
+            ci_mean = np.mean(filtered_values)
+            ci_range = val_upper - val_lower
+            
+            # Tính K-CI (K riêng cho khoảng CI)
+            if ci_range > 1e-6:
+                k_ci = 8.0 / ci_range
+                k_ci_rounded = round(k_ci, 3)
+            else:
+                k_ci_rounded = float('inf')
+
+            key = f"{ci}%_CI"
+            channel_result["percentiles"][key] = {
+                "lower_percentile": lower_p,
+                "upper_percentile": upper_p,
+                "min": float(val_lower),
+                "max": float(val_upper),
+                "range": float(ci_range),
+                "mean": float(ci_mean),
+                "k_ci_value": k_ci_rounded # K-value riêng cho khoảng CI
+            }
+            
+            if channel_idx < 5 or channel_idx == C - 1:
+                logger.info(f"  {ci}% CI: Range = [{val_lower:.6f}, {val_upper:.6f}], K_CI = {k_ci_rounded}")
+
+        channel_stats_list.append(channel_result)
 
     logger.info("=" * 50)
+    logger.info(f"Successfully calculated statistics for {C} channels.")
+
 
     # Lưu kết quả ra file JSON
     os.makedirs(save_dir, exist_ok=True)
-    json_path = os.path.join(save_dir, "feature_stats.json")
+    json_path = os.path.join(save_dir, "feature_stats_combined.json")
+    
+    # Kết hợp Global và Channel-wise stats
+    final_results = {
+        "global_stats": global_results,
+        "channel_stats": channel_stats_list,
+    }
+    
     with open(json_path, "w") as f:
-        json.dump(results, f, indent=4)
-    logger.info(f"Statistics saved to: {json_path}")
+        json.dump(final_results, f, indent=4)
+    logger.info(f"Combined statistics saved to: {json_path}")
 
 
 def main():
@@ -180,7 +254,7 @@ def main():
     # --- 3. BUILD DATALOADER ---
     # Sử dụng hàm build_dataloader gốc, đảm bảo distributed=False nếu chạy single GPU
     train_loader, test_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode)
-    data_use = test_loader
+    data_use = train_loader
     # ==============================================================================
     # BẮT ĐẦU QUÁ TRÌNH TRÍCH XUẤT VÀ TÍNH TOÁN
     # ==============================================================================
@@ -195,7 +269,7 @@ def main():
 
     # Tắt Gradient hoàn toàn
     with torch.no_grad():
-        for i, input in enumerate(test_loader):
+        for i, input in enumerate(data_use):
             # Forward pass thông thường qua ModelHelper
             # ModelHelper sẽ tự động gọi backbone -> neck -> reconstruction
             # UniADMemory (reconstruction) sẽ trả về dict chứa "feature_align"

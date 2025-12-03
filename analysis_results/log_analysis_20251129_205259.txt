@@ -1,6 +1,0 @@
-[2025-11-29 20:52:59,225][extract_and_analyze_features.py][line: 144][    INFO] args: Namespace(config='tools/config.yaml', local_rank=None, single_gpu=True, save_dir='./analysis_results')
-[2025-11-29 20:52:59,633][       utils.py][line: 740][    INFO]  not exist, load from https://github.com/lukemelas/EfficientNet-PyTorch/releases/download/1.0/efficientnet-b4-6ed6700e.pth
-[2025-11-29 20:52:59,825][       utils.py][line: 761][    INFO] Loaded ImageNet pretrained efficientnet-b4
-[2025-11-29 20:53:00,148][custom_dataset.py][line:  36][    INFO] building CustomDataset from: ./data/MVTec-AD/train.json
-[2025-11-29 20:53:00,161][custom_dataset.py][line:  36][    INFO] building CustomDataset from: ./data/MVTec-AD/test.json
-[2025-11-29 20:53:00,171][extract_and_analyze_features.py][line: 189][    INFO] Starting feature extraction on 454 batches...
