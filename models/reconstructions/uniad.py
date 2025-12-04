@@ -45,6 +45,11 @@ class UniADMemory(nn.Module):
 
         # Input projection
         self.input_proj = nn.Linear(inplanes[0], hidden_dim)
+
+        self.norm_pre_input = nn.LayerNorm(inplanes[0])
+        self.norm_post_input = nn.LayerNorm(hidden_dim)
+        self.norm_pre_output = nn.LayerNorm(hidden_dim)
+        self.norm_post_output = nn.LayerNorm(inplanes[0])
         
         # Transformer encoder
         encoder_layer = TransformerEncoderLayer(
@@ -147,7 +152,8 @@ class UniADMemory(nn.Module):
         k_spatial_aligned = k_channel_values.view(1, -1, 1, 1)
         
         # k = 0.57
-        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        feature_tokens = self.norm_post_input(feature_tokens)
         
         # Get positional embeddings
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
@@ -164,7 +170,7 @@ class UniADMemory(nn.Module):
             encoded_tokens, 
             pos=pos_embed
         )  # (H x W) x B x C
-        decoded_tokens = F.layer_norm(decoded_tokens, decoded_tokens.shape[-1:])
+        # decoded_tokens = F.layer_norm(decoded_tokens, decoded_tokens.shape[-1:])
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C_output
         # decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
