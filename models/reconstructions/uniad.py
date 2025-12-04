@@ -164,6 +164,7 @@ class UniADMemory(nn.Module):
             encoded_tokens, 
             pos=pos_embed
         )  # (H x W) x B x C
+        decoded_tokens = F.layer_norm(decoded_tokens, decoded_tokens.shape[-1:])
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C_output
         # decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
