@@ -126,8 +126,7 @@ class UniADMemory(nn.Module):
     
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W (B x 272 x 14 x 14)
-        # feature_align = feature_align + 0.058038
-        backbone_output_stats = self.compute_stats(feature_align, "backbone_output")
+        # backbone_output_stats = self.compute_stats(feature_align, "backbone_output")
         feature_tokens = rearrange(
             feature_align, "b c h w -> (h w) b c"
         )  # (H x W) x B x C
@@ -139,17 +138,14 @@ class UniADMemory(nn.Module):
         
         # Project input features
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C_hidden (196 x B x 256)
-        
-        # SỬA DÒNG NÀY: Lấy K values và căn chỉnh kích thước cho phép nhân/broadcast
-        k_channel_values = self.channel_k_values.to(feature_align.device)
 
+        # Lấy K values và căn chỉnh kích thước cho phép nhân/broadcast
+        k_channel_values = self.channel_k_values.to(feature_align.device)
         # 1. Kích thước cho feature_rec_tokens (H*W x B x C_output): cần (1, 1, C)
         k_token_aligned = k_channel_values.unsqueeze(0).unsqueeze(0) 
-        
         # 2. Kích thước cho feature_align (B x C x H x W): cần (1, C, 1, 1)
         k_spatial_aligned = k_channel_values.view(1, -1, 1, 1)
         
-        # k_channel = self.channel_k_values.unsqueeze(0).unsqueeze(0) # DÒNG CŨ
         # k = 0.57
         feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         
@@ -160,7 +156,7 @@ class UniADMemory(nn.Module):
         encoded_tokens = self.encoder(
             feature_tokens, pos=pos_embed
         )  # (H x W) x B x C
-        encoded_stats = self.compute_stats(encoded_tokens, "encoded_feature")
+        # encoded_stats = self.compute_stats(encoded_tokens, "encoded_feature")
 
         # Decode features
         decoded_tokens = self.decoder(
@@ -170,11 +166,10 @@ class UniADMemory(nn.Module):
         )  # (H x W) x B x C
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C_output
-        decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
+        # decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
         
-        # SỬA DÒNG NÀY: Nhân k_token_aligned (1 x 1 x 272) với feature_rec_tokens (H*W x B x 272)
         feature_rec_tokens = torch.sigmoid(feature_rec_tokens * k_token_aligned) 
-        decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
+        # decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
 
         # Reshape back to spatial representation
         feature_rec = rearrange(
@@ -197,7 +192,7 @@ class UniADMemory(nn.Module):
         # Compute prediction (reconstruction error)
         if k_list is not None:
             feature_align = torch.sigmoid(feature_align * k_spatial_aligned) 
-        feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
+        # feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
         )  # B x 1 x H x W
@@ -209,11 +204,11 @@ class UniADMemory(nn.Module):
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
-            "backbone_output_stats": backbone_output_stats,
-            "encoded_feature_stats": encoded_stats,
-            "decoder_output_raw_stats": decoder_output_stats,
-            "decoder_output_sigmoid_stats": decoder_tokens_sigmoid_stats,
-            "feature_align_sigmoid_stats": feature_align_sigmoid_stats,
+            # "backbone_output_stats": backbone_output_stats,
+            # "encoded_feature_stats": encoded_stats,
+            # "decoder_output_raw_stats": decoder_output_stats,
+            # "decoder_output_sigmoid_stats": decoder_tokens_sigmoid_stats,
+            # "feature_align_sigmoid_stats": feature_align_sigmoid_stats,
         }
         
         return output_dict
