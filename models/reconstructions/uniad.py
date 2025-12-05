@@ -142,8 +142,11 @@ class UniADMemory(nn.Module):
             )
         
         # Project input features
-        feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C_hidden (196 x B x 256)
         feature_tokens = self.norm_pre_input(feature_tokens)
+        feature_align = rearrange(
+            feature_tokens, "(h w) b c -> b c h w", h=self.feature_size[0]
+        )
+        feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C_hidden (196 x B x 256)
         # Lấy K values và căn chỉnh kích thước cho phép nhân/broadcast
         k_channel_values = self.channel_k_values.to(feature_align.device)
         # 1. Kích thước cho feature_rec_tokens (H*W x B x C_output): cần (1, 1, C)
