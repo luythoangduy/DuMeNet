@@ -32,8 +32,8 @@ from utils.misc_helper import (
 from utils.optimizer_helper import get_optimizer
 from utils.vis_helper import visualize_compound, visualize_single
 import numpy as np
-import setproctitle
-setproctitle.setproctitle("Minh Tri is training...")
+# import setproctitle
+# setproctitle.setproctitle("Minh Tri is training...")
 try:
     import wandb
     WANDB_AVAILABLE = True
@@ -96,7 +96,6 @@ def calculate_channel_k_values(data_loader, model, ci_ratio, logger, single_gpu_
     feature_np = full_feature_tensor.permute(1, 0, 2, 3).reshape(C, -1).numpy()
     
     k_values = []
-    shift_values = []
     ci_key = f"{ci_ratio}%_CI"
     tail = (100 - ci_ratio) / 2.0
     lower_p = tail
@@ -104,7 +103,7 @@ def calculate_channel_k_values(data_loader, model, ci_ratio, logger, single_gpu_
 
     for channel_idx in range(C):
         channel_values = feature_np[channel_idx]
-        val_shift = np.mean(channel_values)
+        
         # Tính Percentiles
         val_lower = np.percentile(channel_values, lower_p)
         val_upper = np.percentile(channel_values, upper_p)
@@ -118,9 +117,9 @@ def calculate_channel_k_values(data_loader, model, ci_ratio, logger, single_gpu_
             k_val_rounded = 1.0 # Fallback an toàn
 
         k_values.append(k_val_rounded)
-        shift_values.append(round(val_shift, 5))
+
     logger.info(f"K-Scaling Calculation Complete: Generated {C} K values.")
-    return k_values, shift_values
+    return k_values
 
 def main():
     global args, config, key_metric, best_metric
@@ -192,7 +191,7 @@ def main():
     ci_ratio = config.net[-1].kwargs.stats_config.ci_ratio 
     
     # Tính toán K values (chạy trên toàn bộ dataset)
-    calculated_k_values, calculated_shift_values = calculate_channel_k_values(
+    calculated_k_values = calculate_channel_k_values(
         train_loader, model_for_k_calc, ci_ratio, logger, single_gpu_mode, rank
     )
     
@@ -201,10 +200,8 @@ def main():
     
     # 3. CẬP NHẬT CONFIG CHÍNH
     if calculated_k_values is not None:
-        # Cập nhật danh sách K values vào cấu hình
+        # Cập nhật danh sách K values vào cấu hình cho module reconstruction
         config.net[-1].kwargs.stats_config.k_values_272 = calculated_k_values
-        # [NEW] Cập nhật danh sách Shift values
-        config.net[-1].kwargs.stats_config.shift_values_272 = calculated_shift_values
         if rank == 0 and logger:
             logger.info("Updated config with calculated channel K values.")
     else:

@@ -96,18 +96,6 @@ class UniADMemory(nn.Module):
             
         # 3. Lưu K tensor vào self (nn.Parameter)
         self.channel_k_values = nn.Parameter(k_tensor, requires_grad=False)
-
-        shift_list = stats_config.get('shift_values_272', None)
-        if shift_list is None or len(shift_list) != self.input_channel_dim:
-            print(f"WARNING: Shift values not found. Using default 0.0.")
-            shift_tensor = torch.zeros(self.input_channel_dim, dtype=torch.float32)
-        else:
-            print(f"Successfully initialized Shift-values ({self.input_channel_dim} channels).")
-            shift_tensor = torch.tensor(shift_list, dtype=torch.float32)
-            print(f"Shift-values stats: min={shift_tensor.min().item()}, max={shift_tensor.max().item()}, mean={shift_tensor.mean().item()}, std={shift_tensor.std().item()}")
-            
-        # Lưu Shift vào Parameter (không train)
-        self.channel_shift_values = nn.Parameter(shift_tensor, requires_grad=False)
         
         # Upsampling
         self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
@@ -152,13 +140,10 @@ class UniADMemory(nn.Module):
         feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C_hidden (196 x B x 256)
         # Lấy K values và căn chỉnh kích thước cho phép nhân/broadcast
         k_channel_values = self.channel_k_values.to(feature_align.device)
-        shift_channel_values = self.channel_shift_values.to(feature_align.device)
         # 1. Kích thước cho feature_rec_tokens (H*W x B x C_output): cần (1, 1, C)
         k_token_aligned = k_channel_values.unsqueeze(0).unsqueeze(0) 
-        shift_token_aligned = shift_channel_values.unsqueeze(0).unsqueeze(0)
         # 2. Kích thước cho feature_align (B x C x H x W): cần (1, C, 1, 1)
         k_spatial_aligned = k_channel_values.view(1, -1, 1, 1)
-        shift_spatial_aligned = shift_channel_values.view(1, -1, 1, 1)
         
         # k = 0.57
         feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
@@ -182,7 +167,7 @@ class UniADMemory(nn.Module):
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C_output
         # decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
-        feature_rec_tokens = torch.sigmoid(feature_rec_tokens * (k_token_aligned - shift_token_aligned)) 
+        feature_rec_tokens = torch.sigmoid(feature_rec_tokens * k_token_aligned) 
         # decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
 
         # Reshape back to spatial representation
@@ -205,7 +190,7 @@ class UniADMemory(nn.Module):
 
         # Compute prediction (reconstruction error)
         if k_list is not None:
-            feature_align = torch.sigmoid(feature_align * (k_spatial_aligned - shift_spatial_aligned)) 
+            feature_align = torch.sigmoid(feature_align * k_spatial_aligned) 
         # feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
