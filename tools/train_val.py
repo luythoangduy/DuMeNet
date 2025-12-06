@@ -47,7 +47,7 @@ parser.add_argument("-e", "--evaluate", action="store_true")
 parser.add_argument("--local_rank", default=None, help="local rank for dist")
 parser.add_argument("--single_gpu", action="store_true", help="Use single GPU mode")
 
-def calculate_channel_k_values(data_loader, model, ci_ratio, logger, single_gpu_mode, rank):
+def calculate_channel_k_values(data_loader, model, ci_ratio, activation_type, logger, single_gpu_mode, rank):
     """
     Chạy qua toàn bộ dataset (backbone features) để tính toán k_ci_value theo từng kênh.
     """
@@ -101,6 +101,21 @@ def calculate_channel_k_values(data_loader, model, ci_ratio, logger, single_gpu_
     lower_p = tail
     upper_p = 100 - tail
 
+    activation_type_lower = activation_type.lower()
+    if activation_type_lower == 'sigmoid':
+        numerator = 8.0
+    elif activation_type_lower in ['tanh', 'arctan']:
+        numerator = 4.0
+    else:
+        numerator = 8.0 # Fallback an toàn
+        # ... (log warning)
+
+    if rank == 0 and logger:
+        logger.info(f"Using Activation: **{activation_type_lower.upper()}** with Numerator: **{numerator}**")
+
+    k_values = []
+
+    # 2. Vòng lặp tính toán K cho từng kênh
     for channel_idx in range(C):
         channel_values = feature_np[channel_idx]
         
@@ -111,7 +126,7 @@ def calculate_channel_k_values(data_loader, model, ci_ratio, logger, single_gpu_
         
         # Tính K-value
         if value_range > 1e-6:
-            k_val = 8.0 / value_range
+            k_val = numerator / value_range 
             k_val_rounded = round(k_val, 3)
         else:
             k_val_rounded = 1.0 # Fallback an toàn
@@ -189,10 +204,10 @@ def main():
     
     # 2. TÍNH TOÁN K VALUES
     ci_ratio = config.net[-1].kwargs.stats_config.ci_ratio 
-    
+    activation_type = config.net[-1].kwargs.stats_config.get('activation_type', 'sigmoid')
     # Tính toán K values (chạy trên toàn bộ dataset)
     calculated_k_values = calculate_channel_k_values(
-        train_loader, model_for_k_calc, ci_ratio, logger, single_gpu_mode, rank
+        train_loader, model_for_k_calc, ci_ratio, activation_type, logger, single_gpu_mode, rank
     )
     
     # HỦY TẢI MODEL TẠM THỜI

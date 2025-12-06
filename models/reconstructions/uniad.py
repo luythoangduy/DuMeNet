@@ -81,6 +81,7 @@ class UniADMemory(nn.Module):
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
         self.stats_config = stats_config # Lưu config
+        self.activation_type = stats_config.get('activation_type', 'sigmoid').lower()
         # 1. Lấy danh sách K đã được tính toán từ file train_val.py (EasyDict)
         global k_list 
         k_list = stats_config.get('k_values_272', None) 
@@ -102,6 +103,19 @@ class UniADMemory(nn.Module):
 
         # Initialize parameters
         initialize_from_cfg(self, initializer)
+    
+    def _get_activation_fn_from_config(self, activation_type: str):
+        if activation_type == 'sigmoid':
+            return torch.sigmoid
+        elif activation_type == 'tanh':
+            return torch.tanh
+        elif activation_type == 'arctan':
+            # Arctan thường được dùng với hệ số (ví dụ: 1/x * arctan(x * k)) để scaling
+            # Tuy nhiên, ở đây ta chỉ cần hàm: arctan(x * k)
+            return torch.atan
+        else:
+            print(f"WARNING: Unknown activation type '{activation_type}'. Defaulting to torch.sigmoid.")
+            return torch.sigmoid
 
     def add_jitter(self, feature_tokens, scale, prob):
         if random.uniform(0, 1) <= prob:
@@ -145,7 +159,7 @@ class UniADMemory(nn.Module):
         # 2. Kích thước cho feature_align (B x C x H x W): cần (1, C, 1, 1)
         k_spatial_aligned = k_channel_values.view(1, -1, 1, 1)
         
-        # k = 0.57
+        activation_fn = self._get_activation_fn_from_config(self.activation_type)
         feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
         
         # Get positional embeddings
@@ -167,7 +181,7 @@ class UniADMemory(nn.Module):
         # Project back to original dimension
         feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C_output
         # decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
-        feature_rec_tokens = torch.sigmoid(feature_rec_tokens * k_token_aligned) 
+        feature_rec_tokens = activation_fn(feature_rec_tokens * k_token_aligned) 
         # decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
 
         # Reshape back to spatial representation
@@ -190,7 +204,7 @@ class UniADMemory(nn.Module):
 
         # Compute prediction (reconstruction error)
         if k_list is not None:
-            feature_align = torch.sigmoid(feature_align * k_spatial_aligned) 
+            feature_align = activation_fn(feature_align * k_spatial_aligned) 
         # feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
