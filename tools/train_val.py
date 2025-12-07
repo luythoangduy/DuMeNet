@@ -105,7 +105,7 @@ def calculate_channel_k_values(data_loader, model, ci_ratio, activation_type, lo
     if activation_type_lower == 'sigmoid':
         numerator = 8.0
     elif activation_type_lower in ['tanh', 'arctan']:
-        numerator = 4.0
+        numerator = 4.8
     else:
         numerator = 8.0 # Fallback an toàn
         # ... (log warning)
