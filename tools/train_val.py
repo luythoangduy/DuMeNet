@@ -359,8 +359,8 @@ def main():
                             "optimizer": optimizer.state_dict(),
                         },
                         False,
-                        config,
-                        filename='final_model.pth.tar'
+                        config
+                        # filename='final_model.pth.tar'
                     )
                 
                 # Log best metric to wandb
