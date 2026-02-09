@@ -3,7 +3,7 @@ import math
 import os
 import random
 from typing import Optional
-import json
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -14,6 +14,206 @@ from torch import Tensor, nn
 __all__ = ["UniADMemory"]
 
 
+class ChannelMemoryModule(nn.Module):
+    """
+    Channel Memory Module - Feature-wise processing với Q/K/V projections
+    Memory shape: [mem_size, feature_dim] - học patterns trong feature space
+    """
+    def __init__(self, mem_dim, feature_dim, mem_mask_ratio=0.0, **kwargs):
+        super(ChannelMemoryModule, self).__init__()
+        
+        self.mem_dim = mem_dim  # Number of memory slots
+        self.feature_dim = feature_dim  # Feature dimension
+        self.mem_mask_ratio = mem_mask_ratio
+        self.scale = 1.0 / math.sqrt(feature_dim)  # Scale factor for attention
+        
+        # Memory bank: [mem_size, feature_dim]
+        self.memory = nn.Parameter(torch.randn(mem_dim, feature_dim))
+        nn.init.normal_(self.memory, mean=0, std=0.1)
+        
+        # Q, K, V projections như trong attention mechanism
+        self.query_proj = nn.Linear(feature_dim, feature_dim, bias=False)
+        self.key_proj = nn.Linear(feature_dim, feature_dim, bias=False)
+        self.value_proj = nn.Linear(feature_dim, feature_dim, bias=False)
+        
+    def forward(self, input_tokens):
+        """
+        Args:
+            input_tokens: [N_tokens, batch_size, feature_dim] - feature tokens
+        Returns:
+            dict with output and memory information
+        """
+        N_tokens, batch_size, feature_dim = input_tokens.shape
+        
+        # Reshape for processing: [N_tokens * batch_size, feature_dim]
+        input_flat = input_tokens.view(N_tokens * batch_size, feature_dim)
+        
+        # Project input to queries
+        queries = self.query_proj(input_flat)  # [N_tokens * batch_size, feature_dim]
+        
+        # Project memory to keys and values
+        keys = self.key_proj(self.memory)  # [mem_dim, feature_dim]
+        values = self.value_proj(self.memory)  # [mem_dim, feature_dim]
+        
+        # Compute attention scores: Q @ K^T
+        attention_scores = torch.mm(queries, keys.t())  # [N_tokens * batch_size, mem_dim]
+        
+        if self.training and self.mem_mask_ratio > 0:
+            num_masked = int(self.mem_dim * self.mem_mask_ratio)
+            if num_masked > 0:
+                # Chọn ngẫu nhiên index để mask
+                mask_indices = torch.randperm(self.mem_dim, device=attention_scores.device)[:num_masked]
+                # Gán -inf để Softmax bỏ qua các slot này (coi như không tồn tại khi query)
+                attention_scores[:, mask_indices] = float('-inf')
+
+        # Apply scale
+        attention_scores = attention_scores * self.scale
+        
+        # Apply softmax to get attention weights
+        att_weight = F.softmax(attention_scores, dim=1)  # [N_tokens * batch_size, mem_dim]
+        
+        # Retrieve from memory: attention × values
+        output_flat = torch.mm(att_weight, values)  # [N_tokens * batch_size, feature_dim]
+        
+        # Reshape back to original format
+        output_tokens = output_flat.view(N_tokens, batch_size, feature_dim)  # [N_tokens, batch_size, feature_dim]
+        
+        return {
+            'output': output_tokens,
+            'att_weight': att_weight,
+            'attention_scores': attention_scores,
+            'memory': self.memory
+        }
+
+
+class SpatialMemoryModule(nn.Module):
+    """
+    Spatial Memory Module - Spatial pattern processing với Q/K/V projections và SSIM similarity
+    Memory shape: [mem_size, H, W] - học spatial patterns
+    """
+    def __init__(self, mem_dim, height, width, mem_mask_ratio=0.0, **kwargs):
+        super(SpatialMemoryModule, self).__init__()
+        
+        self.mem_dim = mem_dim  # Number of memory slots
+        self.height = height    # Spatial height
+        self.width = width      # Spatial width
+        self.mem_mask_ratio = mem_mask_ratio
+        self.spatial_dim = height * width
+        self.scale = 1.0  # Scale factor for SSIM similarity
+        
+        # Memory bank: [mem_size, H, W] - giữ nguyên spatial structure
+        self.memory = nn.Parameter(torch.randn(mem_dim, height, width))
+        nn.init.normal_(self.memory, mean=0, std=0.1)
+        
+        # Q, K, V projections cho spatial patterns
+        self.query_proj = nn.Linear(self.spatial_dim, self.spatial_dim, bias=False)
+        self.key_proj = nn.Linear(self.spatial_dim, self.spatial_dim, bias=False)
+        self.value_proj = nn.Linear(self.spatial_dim, self.spatial_dim, bias=False)
+
+    def compute_ssim_similarity(self, query_patterns, memory_patterns):
+        """
+        Compute SSIM similarity between query spatial patterns and memory patterns
+        
+        Args:
+            query_patterns: [N_patterns, H, W] - query spatial patterns
+            memory_patterns: [mem_dim, H, W] - memory spatial patterns
+        Returns:
+            similarity: [N_patterns, mem_dim] - SSIM similarities
+        """
+        N_patterns, H, W = query_patterns.shape
+        mem_dim = memory_patterns.shape[0]
+        
+        # Flatten spatial dimensions
+        query_flat = query_patterns.view(N_patterns, H * W)  # [N_patterns, H*W]
+        memory_flat = memory_patterns.view(mem_dim, H * W)  # [mem_dim, H*W]
+        
+        # Compute means
+        query_mean = torch.mean(query_flat, dim=1, keepdim=True)  # [N_patterns, 1]
+        memory_mean = torch.mean(memory_flat, dim=1, keepdim=True)  # [mem_dim, 1]
+        
+        # Compute variances
+        query_var = torch.var(query_flat, dim=1, keepdim=True)  # [N_patterns, 1]
+        memory_var = torch.var(memory_flat, dim=1, keepdim=True)  # [mem_dim, 1]
+        
+        # Center the data
+        query_centered = query_flat - query_mean
+        memory_centered = memory_flat - memory_mean
+        
+        # Compute covariance
+        covariance = torch.mm(query_centered, memory_centered.t()) / (H * W - 1)  # [N_patterns, mem_dim]
+        
+        # SSIM formula components
+        c1, c2 = 0.01, 0.03
+        
+        # Numerator: (2*mu1*mu2 + c1) * (2*cov + c2)
+        mean_product = torch.mm(query_mean, memory_mean.t())  # [N_patterns, mem_dim]
+        numerator = (2 * mean_product + c1) * (2 * covariance + c2)
+        
+        # Denominator: (mu1^2 + mu2^2 + c1) * (var1 + var2 + c2)
+        mean_sum = query_mean**2 + memory_mean.t()**2  # [N_patterns, mem_dim]
+        var_sum = query_var + memory_var.t()  # [N_patterns, mem_dim]
+        denominator = (mean_sum + c1) * (var_sum + c2)
+        
+        # SSIM similarity
+        ssim = numerator / (denominator + 1e-8)
+        
+        return ssim
+
+    def forward(self, input_tokens):
+        """
+        Args:
+            input_tokens: [N_tokens, batch_size, feature_dim] - feature tokens
+        Returns:
+            dict with output and memory information
+        """
+        feature_dim, batch_size, N_tokens = input_tokens.shape
+        
+        # Reshape để có spatial dimensions (giả sử feature_dim = height * width)
+        H, W = self.height, self.width
+        
+        # Reshape to spatial format: [N_tokens * batch_size, H, W]
+        input_spatial = input_tokens.view(N_tokens * batch_size, H, W)
+        
+        # Project input to queries
+        input_flat = input_spatial.view(N_tokens * batch_size, H * W)  # [N_tokens * batch_size, H*W]
+        queries_flat = self.query_proj(input_flat)  # [N_tokens * batch_size, H*W]
+        queries_spatial = queries_flat.view(N_tokens * batch_size, H, W)  # [N_tokens * batch_size, H, W]
+        
+        # Project memory to keys and values
+        memory_flat = self.memory.view(self.mem_dim, H * W)  # [mem_dim, H*W]
+        keys_flat = self.key_proj(memory_flat)  # [mem_dim, H*W]
+        values_flat = self.value_proj(memory_flat)  # [mem_dim, H*W]
+        keys_spatial = keys_flat.view(self.mem_dim, H, W)  # [mem_dim, H, W]
+        
+        # Compute SSIM similarity between queries và keys
+        ssim_similarity = self.compute_ssim_similarity(queries_spatial, keys_spatial)  # [N_tokens * batch_size, mem_dim]
+        
+        if self.training and self.mem_mask_ratio > 0:
+            num_masked = int(self.mem_dim * self.mem_mask_ratio)
+            if num_masked > 0:
+                # Chọn ngẫu nhiên index để mask
+                mask_indices = torch.randperm(self.mem_dim, device=ssim_similarity.device)[:num_masked]
+                # Gán -inf vào similarity
+                ssim_similarity[:, mask_indices] = float('-inf')
+
+        # Apply scale and softmax to get attention weights
+        attention_scores = ssim_similarity * self.scale
+        att_weight = F.softmax(attention_scores, dim=1)  # [N_tokens * batch_size, mem_dim]
+        
+        # Retrieve from memory: attention × values
+        output_flat = torch.mm(att_weight, values_flat)  # [N_tokens * batch_size, H*W]
+        
+        # Reshape back to original token format
+        output_tokens = output_flat.view(N_tokens, batch_size, feature_dim)  # [N_tokens, batch_size, feature_dim]
+        
+        return {
+            'output': output_tokens,
+            'att_weight': att_weight,
+            'ssim_similarity': ssim_similarity,
+            'memory': self.memory
+        }
+
+
 class UniADMemory(nn.Module):
     def __init__(
         self,
@@ -21,12 +221,10 @@ class UniADMemory(nn.Module):
         instrides,
         feature_size,
         feature_jitter,
-        neighbor_mask,
         hidden_dim,
         pos_embed_type,
         save_recon,
         initializer,
-        stats_config,
         **kwargs,
     ):
         super().__init__()
@@ -40,11 +238,49 @@ class UniADMemory(nn.Module):
             pos_embed_type, feature_size, hidden_dim
         )
         self.save_recon = save_recon
-        self.input_channel_dim = inplanes[0]
         self.hidden_dim = hidden_dim
 
         # Input projection
         self.input_proj = nn.Linear(inplanes[0], hidden_dim)
+        
+        # Memory modules configuration
+        self.memory_mode = kwargs.get('memory_mode', 'both')  # 'channel', 'spatial', 'both', 'none'
+        self.fusion_mode = kwargs.get('fusion_mode', 'concat')  # Default: 'concat', Options: 'add', 'gate', 'weighted_sum', 'add_linear', 'multiply'
+        self.channel_memory_size = kwargs.get('channel_memory_size', 256)
+        self.spatial_memory_size = kwargs.get('spatial_memory_size', 256)
+        
+        # Initialize memory modules based on mode
+        self.use_channel_memory = self.memory_mode in ['channel', 'both']
+        self.use_spatial_memory = self.memory_mode in ['spatial', 'both']
+        
+        self.channel_memory_module = None
+        self.spatial_memory_module = None
+        
+        self.mem_mask_ratio = kwargs.get('memory_masking_ratio', 0.0)
+        if self.use_channel_memory:
+            # Channel memory module - xử lý feature patterns
+            self.channel_memory_module = ChannelMemoryModule(
+                mem_dim=self.channel_memory_size,
+                feature_dim=hidden_dim,
+                mem_mask_ratio=self.mem_mask_ratio,
+                **kwargs
+            )
+            print('use channel mem')
+        else:
+            print('no channel mem')
+        
+        if self.use_spatial_memory:
+            # Spatial memory module - xử lý spatial patterns  
+            self.spatial_memory_module = SpatialMemoryModule(
+                mem_dim=self.spatial_memory_size,
+                height=feature_size[0],
+                width=feature_size[1],
+                mem_mask_ratio=self.mem_mask_ratio,
+                **kwargs
+            )
+            print('use spatial mem')
+        else:
+            print('no spatial mem')
         
         # Transformer encoder
         encoder_layer = TransformerEncoderLayer(
@@ -78,44 +314,53 @@ class UniADMemory(nn.Module):
             decoder_norm,
             return_intermediate=False,
         )
+        
+        # Feature fusion layer - adapt based on memory mode and fusion method
+        fusion_input_dim = hidden_dim
+        if self.use_channel_memory and self.use_spatial_memory:
+            if self.fusion_mode == 'concat':
+                print("fusion mode: concat")
+                fusion_input_dim = hidden_dim * 2
+                self.fusion_layer = nn.Linear(fusion_input_dim, hidden_dim)
+            elif self.fusion_mode == 'add' or self.fusion_mode == 'multiply':
+                print("fusion mode: add/multiply")
+                # No parameters needed for these operations
+                self.fusion_layer = nn.Identity()
+            elif self.fusion_mode == 'add_linear':
+                print("fusion mode: add + linear")
+                self.fusion_layer = nn.Linear(hidden_dim, hidden_dim)
+
+            elif self.fusion_mode == 'weighted_sum':
+                print("fusion mode: weighted sum (learnable alpha)")
+                # Learnable fusion weight α
+                self.alpha = nn.Parameter(torch.tensor(0.5))
+                self.fusion_layer = nn.Identity()
+            elif self.fusion_mode == 'gate':
+                print("fusion mode: gate")
+                # Gated fusion mechanism
+                self.gate_layer = nn.Sequential(
+                    nn.Linear(hidden_dim * 2, hidden_dim),
+                    nn.Sigmoid()
+                )
+                self.fusion_layer = nn.Identity()
+            else:
+                print("fusion mode: unknown")
+                raise ValueError(f"Unsupported fusion mode: {self.fusion_mode}")
+        elif self.use_channel_memory or self.use_spatial_memory:
+            # Single memory type - no fusion needed
+            self.fusion_layer = nn.Identity()
+        else:
+            # No memory - no fusion needed
+            self.fusion_layer = nn.Identity()
+        
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, inplanes[0])
-        self.stats_config = stats_config # Lưu config
-        self.activation_type = stats_config.get('activation_type', 'sigmoid').lower()
-        # 1. Lấy danh sách K đã được tính toán từ file train_val.py (EasyDict)
-        global k_list 
-        k_list = stats_config.get('k_values_272', None) 
-        
-        # 2. Xử lý fallback nếu k_values chưa được tính hoặc không tồn tại (sẽ là list rỗng hoặc None)
-        if k_list is None or len(k_list) != self.input_channel_dim:
-            print(f"WARNING: K values not found in config or size mismatch. Using default k=1.0 for {self.input_channel_dim} channels.")
-            k_tensor = torch.ones(self.input_channel_dim, dtype=torch.float32)
-        else:
-            print(f"Successfully initialized K-values from calculated config ({self.input_channel_dim} channels).")
-            k_tensor = torch.tensor(k_list, dtype=torch.float32)
-            print(f"K-values stats: min={k_tensor.min().item()}, max={k_tensor.max().item()}, mean={k_tensor.mean().item()}, std={k_tensor.std().item()}")
-            
-        # 3. Lưu K tensor vào self (nn.Parameter)
-        self.channel_k_values = nn.Parameter(k_tensor, requires_grad=False)
         
         # Upsampling
         self.upsample = nn.UpsamplingBilinear2d(scale_factor=instrides[0])
 
         # Initialize parameters
         initialize_from_cfg(self, initializer)
-    
-    def _get_activation_fn_from_config(self, activation_type: str):
-        if activation_type == 'sigmoid':
-            return torch.sigmoid
-        elif activation_type == 'tanh':
-            return torch.tanh
-        elif activation_type == 'arctan':
-            # Arctan thường được dùng với hệ số (ví dụ: 1/x * arctan(x * k)) để scaling
-            # Tuy nhiên, ở đây ta chỉ cần hàm: arctan(x * k)
-            return torch.atan
-        else:
-            print(f"WARNING: Unknown activation type '{activation_type}'. Defaulting to torch.sigmoid.")
-            return torch.sigmoid
 
     def add_jitter(self, feature_tokens, scale, prob):
         if random.uniform(0, 1) <= prob:
@@ -127,41 +372,49 @@ class UniADMemory(nn.Module):
             jitter = jitter * feature_norms * scale
             feature_tokens = feature_tokens + jitter
         return feature_tokens
-    def compute_stats(self, tensor: torch.Tensor, name: str) -> dict:
-        """Tính toán min, max, mean, std cho một tensor."""
-        stats = {
-            f'{name}_min': tensor.min().item(),
-            f'{name}_max': tensor.max().item(),
-            f'{name}_mean': tensor.mean().item(),
-            f'{name}_std': tensor.std().item(),
-        }
-        # print(f"{name} stats: min={stats[f'{name}_min']}, max={stats[f'{name}_max']}, mean={stats[f'{name}_mean']}, std={stats[f'{name}_std']}")
-        return stats
-    
+    def add_random_mask(self, feature_tokens, mask_ratio, prob):
+        num_tokens, batch_size, dim_channel = feature_tokens.shape
+        
+        for b in range(batch_size):
+            if random.uniform(0, 1) <= prob:  # ← Check CHO TỪNG sample
+                num_masked = int(num_tokens * mask_ratio)
+                mask_indices = torch.randperm(num_tokens)[:num_masked]
+                
+                # Set masked tokens to zero
+                feature_tokens[mask_indices, b, :] = 0.0
+                
+        return feature_tokens
+
     def forward(self, input):
-        feature_align = input["feature_align"]  # B x C X H x W (B x 272 x 14 x 14)
-        # backbone_output_stats = self.compute_stats(feature_align, "backbone_output")
+        feature_align = input["feature_align"]  # B x C X H x W
         feature_tokens = rearrange(
             feature_align, "b c h w -> (h w) b c"
         )  # (H x W) x B x C
+        
         # Add jitter during training if enabled
         if self.training and self.feature_jitter:
             feature_tokens = self.add_jitter(
                 feature_tokens, self.feature_jitter.scale, self.feature_jitter.prob
             )
-        
+        # Add random masking during training if enabled
+        # if self.training and self.feature_masking:
+        #     # print('apply feature masking', self.feature_masking.get('ratio', 0.15), self.feature_masking.get('prob', 0.5))
+        #     feature_tokens = self.add_random_mask(
+        #         feature_tokens, 
+        #         self.feature_masking.get('ratio', 0.15),  # Default 15% masking
+        #         self.feature_masking.get('prob', 0.5)     # Default 50% probability
+        #     )
+
         # Project input features
-        feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C_hidden (196 x B x 256)
-        # Lấy K values và căn chỉnh kích thước cho phép nhân/broadcast
-        k_channel_values = self.channel_k_values.to(feature_align.device)
-        # 1. Kích thước cho feature_rec_tokens (H*W x B x C_output): cần (1, 1, C)
-        k_token_aligned = k_channel_values.unsqueeze(0).unsqueeze(0) 
-        # 2. Kích thước cho feature_align (B x C x H x W): cần (1, C, 1, 1)
-        k_spatial_aligned = k_channel_values.view(1, -1, 1, 1)
-        
-        activation_fn = self._get_activation_fn_from_config(self.activation_type)
-        feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
-        
+        feature_tokens = self.input_proj(feature_tokens)  # (H x W) x B x C
+        # feature_tokens = F.layer_norm(feature_tokens, feature_tokens.shape[-1:])
+        # x_min, x_max = feature_tokens.min(), feature_tokens.max()
+        # feature_tokens = (feature_tokens - x_min) / (x_max - x_min + 1e-6)
+        # x_min, x_max = feature_tokens.min(), feature_tokens.max()
+        # feature_tokens = 2 * (feature_tokens - x_min) / (x_max - x_min + 1e-6) - 1
+        # mean = feature_tokens.mean()
+        # std = feature_tokens.std()
+        # feature_tokens = (feature_tokens - mean) / (std + 1e-6)
         # Get positional embeddings
         pos_embed = self.pos_embed(feature_tokens)  # (H x W) x C
         
@@ -169,21 +422,83 @@ class UniADMemory(nn.Module):
         encoded_tokens = self.encoder(
             feature_tokens, pos=pos_embed
         )  # (H x W) x B x C
-        # encoded_stats = self.compute_stats(encoded_tokens, "encoded_feature")
+        # print('encoded_tokens: ', encoded_tokens.shape)
+        # Memory retrieval based on memory mode
+        memory_features_list = []
+        channel_result = None
+        spatial_result = None
+        
+        if self.use_channel_memory:
+            channel_result = self.channel_memory_module(encoded_tokens)
+            channel_retrieved = channel_result['output']  # (H x W) x B x C
+            memory_features_list.append(channel_retrieved)
+        
+        if self.use_spatial_memory:
+            spatial_result = self.spatial_memory_module(encoded_tokens)
+            spatial_retrieved = spatial_result['output']  # C x B x H x W
+            spatial_retrieved = torch.permute(spatial_retrieved, (2, 1, 0))  # (H x W) x B x C
+            memory_features_list.append(spatial_retrieved)
+        
+        # Fuse memory features based on available memories
+        if len(memory_features_list) == 0:
+            # No memory - use encoded tokens directly
+            memory_features = encoded_tokens
+        elif len(memory_features_list) == 1:
+            # Single memory type
+            memory_features = memory_features_list[0]
+        else:
+            # Multiple memory types - fuse based on fusion_mode
+            channel_features = memory_features_list[0]
+            spatial_features = memory_features_list[1]
+            
+            if self.fusion_mode == 'concat':
+                # Concatenation-based fusion (original method)
+                combined_features = torch.cat([channel_features, spatial_features], dim=-1)  # (H x W) x B x (2*C)
+                memory_features = self.fusion_layer(combined_features)  # (H x W) x B x C
+            
+            elif self.fusion_mode == 'add':
+                # Addition-based fusion
+                memory_features = channel_features + spatial_features
+            
+            elif self.fusion_mode == 'multiply':
+                # Multiplication-based fusion
+                memory_features = channel_features * spatial_features
+            
+            elif self.fusion_mode == 'add_linear':
+                # Add rồi qua Linear để học mapping mới
+                added_features = channel_features + spatial_features
+                memory_features = self.fusion_layer(added_features)
 
+            elif self.fusion_mode == 'weighted_sum':
+                # Weighted sum với hệ số alpha có thể học
+                memory_features = self.alpha * channel_features + (1 - self.alpha) * spatial_features
+
+            elif self.fusion_mode == 'gate':
+                combined = torch.cat([channel_features, spatial_features], dim=-1)  # [B, N, 2C]
+                gate = self.gate_layer(combined)  # [B, N, C]
+                memory_features = gate * channel_features + (1 - gate) * spatial_features
+
+        # Add jitter AFTER memory retrieval/fusion if enabled
+        # if self.training and self.feature_jitter:
+        #     memory_features = self.add_jitter(
+        #         memory_features, self.feature_jitter.scale, self.feature_jitter.prob
+        #     )
         # Decode features
         decoded_tokens = self.decoder(
-            encoded_tokens, 
-            encoded_tokens, 
+            memory_features, 
+            memory_features, 
             pos=pos_embed
         )  # (H x W) x B x C
-        # decoded_tokens = F.layer_norm(decoded_tokens, decoded_tokens.shape[-1:])
+        
         # Project back to original dimension
-        feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C_output
-        # decoder_output_stats = self.compute_stats(feature_rec_tokens, "decoder_output_raw")
-        feature_rec_tokens = activation_fn(feature_rec_tokens * k_token_aligned) 
-        # decoder_tokens_sigmoid_stats = self.compute_stats(feature_rec_tokens, "decoder_output_sigmoid")
-
+        feature_rec_tokens = self.output_proj(decoded_tokens)  # (H x W) x B x C
+        # feature_rec_tokens = torch.sigmoid(feature_rec_tokens)
+        # feature_rec_tokens = F.layer_norm(feature_rec_tokens, feature_rec_tokens.shape[-1:])
+        # x_min, x_max = feature_rec_tokens.min(), feature_rec_tokens.max()
+        # feature_rec_tokens = 2 * (feature_rec_tokens - x_min) / (x_max - x_min + 1e-6) - 1
+        # mean = feature_rec_tokens.mean()
+        # std = feature_rec_tokens.std()
+        # feature_rec_tokens = (feature_rec_tokens - mean) / (std + 1e-6)
         # Reshape back to spatial representation
         feature_rec = rearrange(
             feature_rec_tokens, "(h w) b c -> b c h w", h=self.feature_size[0]
@@ -203,9 +518,13 @@ class UniADMemory(nn.Module):
                 np.save(os.path.join(save_dir, filename_ + ".npy"), feature_rec_np)
 
         # Compute prediction (reconstruction error)
-        if k_list is not None:
-            feature_align = activation_fn(feature_align * k_spatial_aligned) 
-        # feature_align_sigmoid_stats = self.compute_stats(feature_align, "feature_align_sigmoid")
+        # feature_align = torch.sigmoid(feature_align) 
+        # feature_align = F.layer_norm(feature_align, feature_align.shape[1:])
+        # x_min, x_max = feature_align.min(), feature_align.max()
+        # feature_align = 2 * (feature_align - x_min) / (x_max - x_min + 1e-6) - 1
+        # mean = feature_align.mean()
+        # std = feature_align.std()
+        # feature_align = (feature_align - mean) / (std + 1e-6)
         pred = torch.sqrt(
             torch.sum((feature_rec - feature_align) ** 2, dim=1, keepdim=True)
         )  # B x 1 x H x W
@@ -217,12 +536,20 @@ class UniADMemory(nn.Module):
             "feature_rec": feature_rec,
             "feature_align": feature_align,
             "pred": pred,
-            # "backbone_output_stats": backbone_output_stats,
-            # "encoded_feature_stats": encoded_stats,
-            # "decoder_output_raw_stats": decoder_output_stats,
-            # "decoder_output_sigmoid_stats": decoder_tokens_sigmoid_stats,
-            # "feature_align_sigmoid_stats": feature_align_sigmoid_stats,
         }
+        
+        # Add memory-specific outputs if available
+        if channel_result is not None:
+            output_dict.update({
+                "channel_attention": channel_result['att_weight'],
+                "channel_scores": channel_result['attention_scores'],
+            })
+        
+        if spatial_result is not None:
+            output_dict.update({
+                "spatial_attention": spatial_result['att_weight'],
+                "spatial_ssim": spatial_result['ssim_similarity'],
+            })
         
         return output_dict
 
