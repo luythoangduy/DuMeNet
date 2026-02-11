@@ -391,6 +391,11 @@ class UniADMemory(nn.Module):
         """
         return self.hidden_dim
 
+    def get_outstrides(self):
+        """Trả về stride của feature map (phải khớp với outstrides của neck)"""
+        # Trả về giá trị đầu tiên trong list instrides (ví dụ: 16)
+        return self.instrides[0] if isinstance(self.instrides, list) else self.instrides
+    
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
         feature_tokens = rearrange(
