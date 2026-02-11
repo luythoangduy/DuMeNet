@@ -230,6 +230,8 @@ class UniADMemory(nn.Module):
         super().__init__()
         assert isinstance(inplanes, list) and len(inplanes) == 1
         assert isinstance(instrides, list) and len(instrides) == 1
+        self.inplanes = inplanes
+        self.instrides = instrides
         self.feature_size = feature_size
         self.num_queries = feature_size[0] * feature_size[1]
         self.feature_jitter = feature_jitter
