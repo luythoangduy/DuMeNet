@@ -388,7 +388,11 @@ class UniADMemory(nn.Module):
         return feature_tokens
     
     def get_outplanes(self):
-        return [self.hidden_dim]
+        """
+        FIX: Trả về self.inplanes (là [272]) thay vì hidden_dim (512).
+        Vì hàm forward đã project kết quả về lại chiều của feature gốc.
+        """
+        return [self.inplanes]
 
     def get_outstrides(self):
         return self.instrides
