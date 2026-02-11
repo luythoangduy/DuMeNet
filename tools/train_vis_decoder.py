@@ -14,6 +14,7 @@ from easydict import EasyDict
 from models.model_helper import ModelHelper
 from tensorboardX import SummaryWriter
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn import DataParallel # Thêm dòng này
 from utils.criterion_helper import build_criterion
 from utils.dist_helper import setup_distributed
 from utils.lr_helper import get_scheduler
@@ -33,24 +34,12 @@ parser.add_argument("--config", default="./config.yaml")
 parser.add_argument("--class_name", default="")
 parser.add_argument("-v", "--visualization", action="store_true")
 parser.add_argument("--local_rank", default=None, help="local rank for dist")
+parser.add_argument("--single_gpu", action="store_true", help="Use single GPU mode") # Thêm dòng này
 
 
 class_name_list = [
-    "bottle",
-    "cable",
-    "capsule",
-    "carpet",
-    "grid",
-    "hazelnut",
-    "leather",
-    "metal_nut",
-    "pill",
-    "screw",
-    "tile",
-    "toothbrush",
-    "transistor",
-    "wood",
-    "zipper",
+    "bottle", "cable", "capsule", "carpet", "grid", "hazelnut", "leather",
+    "metal_nut", "pill", "screw", "tile", "toothbrush", "transistor", "wood", "zipper",
 ]
 
 
@@ -61,11 +50,19 @@ def main():
     with open(args.config) as f:
         config = EasyDict(yaml.load(f, Loader=yaml.FullLoader))
 
+    # Logic nhận diện Single GPU mode
+    single_gpu_mode = args.single_gpu or not torch.distributed.is_available() or not os.environ.get('WORLD_SIZE')
+
     config.dataset.train.meta_file = config.dataset.train.meta_file.replace(
         "{class_name}", args.class_name
     )
     config.port = config["port"] + class_name_list.index(args.class_name)
-    rank, world_size = setup_distributed(port=config.port)
+    
+    if single_gpu_mode: # Thêm điều kiện này
+        rank, world_size = 0, 1
+    else:
+        rank, world_size = setup_distributed(port=config.port)
+        
     config = update_config(config)
 
     config.exp_path = os.path.join(os.path.dirname(args.config), args.class_name)
@@ -89,27 +86,32 @@ def main():
     reproduce = config.get("reproduce", None)
     if random_seed:
         set_random_seed(random_seed, reproduce)
+        
     # create model
     model = ModelHelper(config.net)
     model.cuda()
-    local_rank = int(os.environ["LOCAL_RANK"])
-    model = DDP(
-        model,
-        device_ids=[local_rank],
-        output_device=local_rank,
-        find_unused_parameters=True,
-    )
+    
+    # Bọc model thông minh (DDP cho đa GPU, DataParallel cho đơn GPU)
+    if single_gpu_mode:
+        model = DataParallel(model)
+        use_ddp = False
+    else:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=True,
+        )
+        use_ddp = True
 
     layers = []
     for module in config.net:
         layers.append(module["name"])
     frozen_layers = config.get("frozen_layers", [])
     active_layers = list(set(layers) ^ set(frozen_layers))
-    if rank == 0:
-        logger.info("layers: {}".format(layers))
-        logger.info("active layers: {}".format(active_layers))
-
-    # parameters needed to be updated
+    
+    # Parameters update (luôn dùng model.module để truy cập các lớp gốc)
     parameters = [
         {"params": getattr(model.module, layer).parameters()} for layer in active_layers
     ]
@@ -120,7 +122,6 @@ def main():
     best_metric = float("inf")
     last_epoch = 0
 
-    # load model: auto_resume > resume_model > load_path
     auto_resume = config.saver.get("auto_resume", True)
     resume_model = config.saver.get("resume_model", None)
     load_path = config.saver.get("load_path", None)
@@ -132,17 +133,11 @@ def main():
         resume_model = lastest_model
     if resume_model:
         best_metric, last_epoch = load_state(resume_model, model, optimizer=optimizer)
-        if rank == 0:
-            logger.info(
-                f"Resumed decoder training from epoch {last_epoch} with best metric {best_metric}"
-            )
-            logger.info(f"Resume model path: {resume_model}")
     elif load_path:
         load_state(load_path, model)
-        if rank == 0:
-            logger.info(f"Loaded decoder model from: {load_path}")
 
-    train_loader, _ = build_dataloader(config.dataset, distributed=True)
+    # Chỉnh lại distributed=False nếu là single_gpu
+    train_loader, _ = build_dataloader(config.dataset, distributed=not single_gpu_mode)
 
     if args.visualization:
         vis_rec(train_loader, model)
@@ -151,13 +146,9 @@ def main():
     criterion = build_criterion(config.criterion)
 
     for epoch in range(last_epoch, config.trainer.max_epoch):
-        # Log epoch info at start
-        if rank == 0 and epoch == last_epoch:
-            logger.info(
-                f"Starting decoder training from epoch {epoch + 1}/{config.trainer.max_epoch}"
-            )
-
-        train_loader.sampler.set_epoch(epoch)
+        if not single_gpu_mode: # Chỉ gọi set_epoch nếu chạy distributed
+            train_loader.sampler.set_epoch(epoch)
+            
         last_iter = epoch * len(train_loader)
         train_loss = train_one_epoch(
             train_loader,
@@ -169,6 +160,7 @@ def main():
             tb_logger,
             criterion,
             frozen_layers,
+            single_gpu_mode # Truyền thêm flag
         )
         lr_scheduler.step(epoch)
 
@@ -202,23 +194,22 @@ def train_one_epoch(
     tb_logger,
     criterion,
     frozen_layers,
+    single_gpu_mode # Thêm tham số
 ):
 
     batch_time = AverageMeter(config.trainer.print_freq_step)
     data_time = AverageMeter(config.trainer.print_freq_step)
     losses = AverageMeter(config.trainer.print_freq_step)
 
-    # switch to train mode
     model.train()
-    # freeze selected layers
     for layer in frozen_layers:
         module = getattr(model.module, layer)
         module.eval()
         for param in module.parameters():
             param.requires_grad = False
 
-    world_size = dist.get_world_size()
-    rank = dist.get_rank()
+    world_size = 1 if single_gpu_mode else dist.get_world_size()
+    rank = 0 if single_gpu_mode else dist.get_rank()
     logger = logging.getLogger("global_logger")
     end = time.time()
 
@@ -226,31 +217,28 @@ def train_one_epoch(
     for i, input in enumerate(train_loader):
         curr_step = start_iter + i
         current_lr = lr_scheduler.get_lr()[0]
-
-        # measure data loading time
         data_time.update(time.time() - end)
 
-        # forward
         outputs = model(input)
         loss = 0
         for name, criterion_loss in criterion.items():
             weight = criterion_loss.weight
             loss += weight * criterion_loss(outputs)
+            
         reduced_loss = loss.clone()
-        dist.all_reduce(reduced_loss)
-        reduced_loss = reduced_loss / world_size
+        if not single_gpu_mode: # Chỉ reduce nếu là distributed
+            dist.all_reduce(reduced_loss)
+            reduced_loss = reduced_loss / world_size
+            
         losses.update(reduced_loss.item())
         train_loss += reduced_loss.item()
 
-        # backward
         optimizer.zero_grad()
         loss.backward()
-        # update
         if config.trainer.get("clip_max_norm", None):
             max_norm = config.trainer.clip_max_norm
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
-        # measure elapsed time
         batch_time.update(time.time() - end)
 
         if (curr_step + 1) % config.trainer.print_freq_step == 0 and rank == 0:
@@ -259,23 +247,12 @@ def train_one_epoch(
             tb_logger.flush()
 
             logger.info(
-                "Epoch: [{0}/{1}]\t"
-                "Iter: [{2}/{3}]\t"
-                "Time {batch_time.val:.2f} ({batch_time.avg:.2f})\t"
-                "Data {data_time.val:.2f} ({data_time.avg:.2f})\t"
-                "Loss {loss.val:.5f} ({loss.avg:.5f})\t"
-                "LR {lr:.5f}\t".format(
-                    epoch + 1,
-                    config.trainer.max_epoch,
-                    curr_step + 1,
+                "Epoch: [{0}/{1}]\tIter: [{2}/{3}]\tLoss {loss.val:.5f} ({loss.avg:.5f})\tLR {lr:.5f}".format(
+                    epoch + 1, config.trainer.max_epoch, curr_step + 1,
                     len(train_loader) * config.trainer.max_epoch,
-                    batch_time=batch_time,
-                    data_time=data_time,
-                    loss=losses,
-                    lr=current_lr,
+                    loss=losses, lr=current_lr
                 )
             )
-
         end = time.time()
 
     return train_loss / len(train_loader)
@@ -283,11 +260,8 @@ def train_one_epoch(
 
 def vis_rec(loader, model):
     model.eval()
-
-    pixel_mean = config.dataset.pixel_mean
-    pixel_mean = torch.tensor(pixel_mean).cuda().unsqueeze(1).unsqueeze(1)  # 3 x 1 x 1
-    pixel_std = config.dataset.pixel_std
-    pixel_std = torch.tensor(pixel_std).cuda().unsqueeze(1).unsqueeze(1)  # 3 x 1 x 1
+    pixel_mean = torch.tensor(config.dataset.pixel_mean).cuda().view(1, 3, 1, 1)
+    pixel_std = torch.tensor(config.dataset.pixel_std).cuda().view(1, 3, 1, 1)
 
     with torch.no_grad():
         for i, input in enumerate(loader):
