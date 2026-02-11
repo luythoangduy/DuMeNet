@@ -386,17 +386,12 @@ class UniADMemory(nn.Module):
                 feature_tokens[mask_indices, b, :] = 0.0
                 
         return feature_tokens
+    
     def get_outplanes(self):
-        """
-        Trả về số lượng output channels để module tiếp theo (VisDecoder) sử dụng.
-        Mặc định là hidden_dim của Transformer.
-        """
-        return self.hidden_dim
+        return [self.hidden_dim]
 
     def get_outstrides(self):
-        """Trả về stride của feature map (phải khớp với outstrides của neck)"""
-        # Trả về giá trị đầu tiên trong list instrides (ví dụ: 16)
-        return self.instrides[0] if isinstance(self.instrides, list) else self.instrides
+        return self.instrides
     
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
