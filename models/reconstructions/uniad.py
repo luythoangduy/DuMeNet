@@ -392,7 +392,7 @@ class UniADMemory(nn.Module):
         FIX: Trả về self.inplanes (là [272]) thay vì hidden_dim (512).
         Vì hàm forward đã project kết quả về lại chiều của feature gốc.
         """
-        return [self.inplanes]
+        return self.inplanes
 
     def get_outstrides(self):
         return self.instrides
