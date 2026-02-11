@@ -384,6 +384,12 @@ class UniADMemory(nn.Module):
                 feature_tokens[mask_indices, b, :] = 0.0
                 
         return feature_tokens
+    def get_outplanes(self):
+        """
+        Trả về số lượng output channels để module tiếp theo (VisDecoder) sử dụng.
+        Mặc định là hidden_dim của Transformer.
+        """
+        return self.hidden_dim
 
     def forward(self, input):
         feature_align = input["feature_align"]  # B x C X H x W
