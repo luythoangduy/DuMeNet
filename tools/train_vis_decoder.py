@@ -137,10 +137,11 @@ def main():
         load_state(load_path, model)
 
     # Chỉnh lại distributed=False nếu là single_gpu
-    train_loader, _ = build_dataloader(config.dataset, distributed=not single_gpu_mode)
+    train_loader, val_loader = build_dataloader(config.dataset, distributed=not single_gpu_mode)
 
     if args.visualization:
-        vis_rec(train_loader, model)
+        # vis_rec(train_loader, model)
+        vis_rec(val_loader, model)
         return
 
     criterion = build_criterion(config.criterion)
@@ -260,16 +261,18 @@ def train_one_epoch(
 
 def vis_rec(loader, model):
     model.eval()
-    pixel_mean = torch.tensor(config.dataset.pixel_mean).cuda().view(1, 3, 1, 1)
-    pixel_std = torch.tensor(config.dataset.pixel_std).cuda().view(1, 3, 1, 1)
+    
+    # Sửa: Dùng view(3, 1, 1) thay vì (1, 3, 1, 1) để khớp với Tensor 3D trong loop
+    pixel_mean = torch.tensor(config.dataset.pixel_mean).cuda().view(3, 1, 1)
+    pixel_std = torch.tensor(config.dataset.pixel_std).cuda().view(3, 1, 1)
 
     with torch.no_grad():
         for i, input in enumerate(loader):
             # forward
             outputs = model(input)
             filenames = outputs["filename"]
-            images = outputs["image"]
-            image_recs = outputs["image_rec"]
+            images = outputs["image"]           # [B, 3, H, W]
+            image_recs = outputs["image_rec"]   # [B, 3, H, W]
             clsnames = outputs["clsname"]
 
             for filename, image, image_rec, clasname in zip(
@@ -278,19 +281,25 @@ def vis_rec(loader, model):
                 filedir, filename = os.path.split(filename)
                 _, defename = os.path.split(filedir)
                 filename_, _ = os.path.splitext(filename)
+                
                 vis_dir = os.path.join(config.visualization.vis_dir, clasname, defename)
                 os.makedirs(vis_dir, exist_ok=True)
                 vis_path = os.path.join(vis_dir, filename_ + ".jpg")
 
+                # De-normalize về 0-255
                 image = (image * pixel_std + pixel_mean) * 255
                 image_rec = (image_rec * pixel_std + pixel_mean) * 255
-                image = torch.cat([image, image_rec], dim=1).permute(
-                    1, 2, 0
-                )  # 2h x w x 3
-                image = image.cpu().numpy()
-                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(vis_path, image)
-
+                
+                # Ghép ảnh: image và image_rec đều là [3, 224, 224]
+                # Ghép theo dim=2 (chiều rộng) để nhìn ảnh nằm ngang cho đẹp
+                combined = torch.cat([image, image_rec], dim=2) # Kết quả: [3, 224, 448]
+                
+                # Chuyển về định dạng ảnh [H, W, C] để lưu
+                combined = combined.permute(1, 2, 0).cpu().numpy().astype('uint8')
+                
+                # Chuyển RGB sang BGR cho OpenCV
+                combined = cv2.cvtColor(combined, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(vis_path, combined)
 
 if __name__ == "__main__":
     main()
